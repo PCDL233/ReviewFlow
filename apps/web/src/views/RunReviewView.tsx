@@ -1,17 +1,18 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReactElement } from 'react';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
+  AutoComplete,
   Button,
   Card,
   Col,
   Form,
-  Input,
   Popconfirm,
   Progress,
   Radio,
   Row,
+  Segmented,
   Select,
   Space,
   Steps,
@@ -23,13 +24,20 @@ import {
   CheckCircleOutlined,
   ClockCircleOutlined,
   CloseCircleOutlined,
-  FolderOpenOutlined,
   ReloadOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons';
+import type { ReviewSource, ReviewTarget } from '@ai-review/shared/api';
 import { STAGE_GROUPS, terminalLabel, useReviewEvents } from '../hooks/use-review-events';
 import type { CompletedResult } from '../hooks/use-review-events';
-import { cancelReview, startReview } from '../api';
+import {
+  cancelReview,
+  fetchRepoBranches,
+  fetchRepoCommits,
+  fetchRepositories,
+  fetchRepoStatus,
+  startReview,
+} from '../api';
 import { CardHeading, PageHeader } from '../components/PageHeader';
 import { useNotify } from '../hooks/use-notify';
 import { ErrorAlert } from '../components/ErrorAlert';
@@ -38,6 +46,9 @@ import { formatDuration } from '../format';
 
 type RunFormValues = {
   repoPath: string;
+  target: ReviewTarget;
+  commit?: string;
+  base?: string;
   mode?: 'fast' | 'full';
   blockOn?: 'BLOCKER' | 'WARNING' | 'NIT';
 };
@@ -60,12 +71,41 @@ const MODE_OPTIONS = [
   },
 ];
 
+const TARGET_OPTIONS: Array<{ value: ReviewTarget; label: string }> = [
+  { value: 'staged', label: '暂存区' },
+  { value: 'worktree', label: '工作区' },
+  { value: 'commit', label: '单个提交' },
+  { value: 'range', label: '提交区间' },
+];
+
+const TARGET_HINT: Record<ReviewTarget, string> = {
+  staged: '审查已 git add 的内容——提交前的标准把关范围。',
+  worktree: '审查 HEAD 与工作区磁盘的差异（含未暂存改动，不含未跟踪文件）。',
+  commit: '审查某个已提交的变更（相对其父提交），用于回溯或补充审查。',
+  range: '审查 base...HEAD 区间，适合合并前或 CI 场景。',
+};
+
 const CONNECTION_LABEL: Record<string, { text: string; color: string }> = {
   connecting: { text: '连接中', color: 'processing' },
   open: { text: '已连接', color: 'success' },
   error: { text: '连接中断', color: 'error' },
   closed: { text: '连接已关闭', color: 'default' },
 };
+
+/** 由表单值构造审查来源；缺参与目标不匹配时返回 null，由调用方给出可读错误。 */
+function toSource(values: RunFormValues): ReviewSource | null {
+  if (values.target === 'staged' || values.target === 'worktree') {
+    return { target: values.target };
+  }
+  if (values.target === 'commit') {
+    return values.commit === undefined || values.commit === ''
+      ? null
+      : { target: 'commit', commit: values.commit };
+  }
+  return values.base === undefined || values.base === ''
+    ? null
+    : { target: 'range', base: values.base };
+}
 
 /** 发起审查：左侧配置，右侧流程说明；完成态保留在页面并等待用户查看报告。 */
 export function RunReviewView(props: RunReviewViewProps): ReactElement {
@@ -76,9 +116,36 @@ export function RunReviewView(props: RunReviewViewProps): ReactElement {
   const queryClient = useQueryClient();
   const { notifyError } = useNotify();
 
+  // 仓库与目标值驱动选择器数据源；未选仓库时不下发请求
+  const repoPath = Form.useWatch('repoPath', form)?.trim() ?? '';
+  const target = Form.useWatch('target', form) ?? 'staged';
+
+  const reposQuery = useQuery({ queryKey: ['repos'], queryFn: fetchRepositories });
+  const statusQuery = useQuery({
+    queryKey: ['repo-status', repoPath],
+    queryFn: () => fetchRepoStatus(repoPath),
+    enabled: repoPath !== '' && /[\\/]/.test(repoPath),
+    retry: false,
+  });
+  const branchesQuery = useQuery({
+    queryKey: ['repo-branches', repoPath],
+    queryFn: () => fetchRepoBranches(repoPath),
+    enabled: repoPath !== '' && target === 'range',
+    retry: false,
+  });
+  const commitsQuery = useQuery({
+    queryKey: ['repo-commits', repoPath],
+    queryFn: () => fetchRepoCommits(repoPath),
+    enabled: repoPath !== '' && target === 'commit',
+    retry: false,
+  });
+
   const startMutation = useMutation({
-    mutationFn: (values: RunFormValues) =>
-      startReview(values.repoPath.trim(), values.mode, values.blockOn),
+    mutationFn: (values: RunFormValues) => {
+      const source = toSource(values);
+      if (source === null) throw new Error('请先选择提交或基线分支');
+      return startReview(values.repoPath.trim(), values.mode, values.blockOn, source);
+    },
     onSuccess: (reviewId) => {
       startedAtRef.current = Date.now();
       setElapsedMs(0);
@@ -114,13 +181,25 @@ export function RunReviewView(props: RunReviewViewProps): ReactElement {
     color: 'default',
   };
   const running = runningId !== undefined && !progress.finished;
+  const repoStatus = statusQuery.data;
+  // 目标为空时的即时提示：避免用户点了「开始审查」才看到服务端 400
+  const emptyTargetWarning =
+    repoStatus === undefined || !repoStatus.isGitRepo
+      ? undefined
+      : target === 'staged' && repoStatus.stagedFiles === 0
+        ? '当前没有暂存内容，先 git add 要审查的改动。'
+        : target === 'worktree' &&
+            repoStatus.unstagedFiles === 0 &&
+            repoStatus.stagedFiles === 0
+          ? '工作区与 HEAD 没有差异。'
+          : undefined;
 
   return (
     <div className="page-stack">
       <PageHeader
         eyebrow="Review workspace"
         title="发起一次代码审查"
-        description="选择仓库、审查模式和阻断阈值，实时跟踪分析进度，完成后查看报告。"
+        description="选择仓库与审查范围，实时跟踪分析进度，完成后查看报告。"
       />
       <Row gutter={[16, 16]}>
         <Col xs={24} lg={14}>
@@ -129,14 +208,14 @@ export function RunReviewView(props: RunReviewViewProps): ReactElement {
               form={form}
               className="review-form"
               layout="vertical"
-              initialValues={{ mode: 'fast' }}
+              initialValues={{ mode: 'fast', target: 'staged' }}
               onFinish={(values) => startMutation.mutate(values)}
             >
               <Form.Item
-                label="仓库路径"
+                label="仓库"
                 name="repoPath"
                 rules={[
-                  { required: true, whitespace: true, message: '请输入仓库路径' },
+                  { required: true, whitespace: true, message: '请选择或输入仓库路径' },
                   {
                     validator: (_rule, value: string | undefined) => {
                       if (value === undefined || value.trim() === '') return Promise.resolve();
@@ -148,13 +227,118 @@ export function RunReviewView(props: RunReviewViewProps): ReactElement {
                   },
                 ]}
               >
-                <Input
+                <AutoComplete
                   size="large"
-                  prefix={<FolderOpenOutlined />}
-                  placeholder="例如：D:/Code/your-project"
+                  allowClear
                   disabled={running}
+                  placeholder="选择仓库，或直接粘贴绝对路径"
+                  options={(reposQuery.data ?? []).map((repo) => ({
+                    value: repo.path,
+                    label: `${repo.name}${repo.reviewed ? ' · 历史' : ''} — ${repo.path}`,
+                  }))}
+                  filterOption={(input, option) =>
+                    String(option?.value ?? '')
+                      .toLowerCase()
+                      .includes(input.toLowerCase())
+                  }
+                  notFoundContent={
+                    <Typography.Text type="secondary">
+                      未发现仓库，可直接粘贴绝对路径
+                    </Typography.Text>
+                  }
                 />
               </Form.Item>
+
+              {repoStatus !== undefined ? (
+                <Alert
+                  className="repo-status-hint"
+                  type={repoStatus.isGitRepo ? 'info' : 'warning'}
+                  showIcon
+                  title={
+                    repoStatus.isGitRepo
+                      ? `${repoStatus.branch || '（游离 HEAD）'} · ${repoStatus.headMessage ?? '无提交'}`
+                      : '该路径不是 git 仓库'
+                  }
+                  description={
+                    repoStatus.isGitRepo
+                      ? `暂存 ${repoStatus.stagedFiles} · 未暂存 ${repoStatus.unstagedFiles} · 未跟踪 ${repoStatus.untrackedFiles}`
+                      : undefined
+                  }
+                />
+              ) : null}
+
+              <Form.Item
+                label={
+                  <Tooltip title="决定读取哪一份 diff：暂存区、工作区、单个提交或提交区间。">
+                    <span>审查范围</span>
+                  </Tooltip>
+                }
+                name="target"
+                extra={TARGET_HINT[target]}
+              >
+                <Segmented
+                  block
+                  disabled={running}
+                  options={TARGET_OPTIONS}
+                  onChange={(value) => form.setFieldValue('target', value as ReviewTarget)}
+                />
+              </Form.Item>
+
+              {target === 'commit' ? (
+                <Form.Item
+                  label="选择提交"
+                  name="commit"
+                  rules={[{ required: true, message: '请选择要审查的提交' }]}
+                  extra={commitsQuery.isError ? '无法读取提交列表，请直接粘贴提交哈希' : undefined}
+                >
+                  <Select
+                    size="large"
+                    showSearch
+                    disabled={running}
+                    loading={commitsQuery.isFetching}
+                    placeholder="搜索提交信息或哈希"
+                    options={(commitsQuery.data ?? []).map((commit) => ({
+                      value: commit.hash,
+                      label: `${commit.shortHash} · ${commit.subject} — ${commit.author}`,
+                    }))}
+                    filterOption={(input, option) =>
+                      String(option?.label ?? '')
+                        .toLowerCase()
+                        .includes(input.toLowerCase())
+                    }
+                  />
+                </Form.Item>
+              ) : null}
+
+              {target === 'range' ? (
+                <Form.Item
+                  label="基线分支"
+                  name="base"
+                  rules={[{ required: true, message: '请选择基线分支' }]}
+                  extra="审查 base...HEAD 区间；无法读取分支列表时可直接粘贴引用。"
+                >
+                  <Select
+                    size="large"
+                    showSearch
+                    disabled={running}
+                    loading={branchesQuery.isFetching}
+                    placeholder="origin/main"
+                    options={(branchesQuery.data ?? []).map((branch) => ({
+                      value: branch.name,
+                      label: `${branch.name}${branch.current ? ' · 当前' : ''}`,
+                    }))}
+                  />
+                </Form.Item>
+              ) : null}
+
+              {emptyTargetWarning !== undefined ? (
+                <Alert
+                  className="repo-empty-hint"
+                  type="warning"
+                  showIcon
+                  title={emptyTargetWarning}
+                />
+              ) : null}
               <Form.Item
                 label="审查模式"
                 name="mode"
@@ -237,8 +421,8 @@ export function RunReviewView(props: RunReviewViewProps): ReactElement {
           <Card className="surface-card" title={<CardHeading title="审查如何工作" />}>
             <ol className="how-it-works">
               <li>
-                <strong>解析暂存区变更</strong>
-                <span>读取当前分支与基准分支的 diff，按文件构建上下文。</span>
+                <strong>解析变更</strong>
+                <span>按所选范围读取 diff，为每个文件构建函数级上下文。</span>
               </li>
               <li>
                 <strong>风险规划</strong>
@@ -258,7 +442,7 @@ export function RunReviewView(props: RunReviewViewProps): ReactElement {
                 <ClockCircleOutlined /> Fast 通常 30–90 秒，Full 可能数分钟。
               </div>
               <div>
-                <CheckCircleOutlined /> 阻断阈值决定 CLI 退出码，不影响报告生成。
+                <CheckCircleOutlined /> 阻断阈值决定 Hook 与 CI 的退出码，不影响报告生成。
               </div>
             </div>
           </Card>

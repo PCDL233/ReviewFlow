@@ -55,6 +55,10 @@ const OPERATION_ACTION_LABELS: Record<OperationLogAction, string> = {
   save_rules: '保存规则',
   test_rules: '试跑规则',
   reindex_knowledge: '重建索引',
+  install_hook: '安装 Hook',
+  rotate_hook_token: '签发令牌',
+  revoke_hook_token: '吊销令牌',
+  run_hook_review: 'Hook 审查',
 };
 
 type LogKind = 'login' | 'operation';

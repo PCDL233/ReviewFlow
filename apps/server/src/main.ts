@@ -3,14 +3,15 @@ import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { LogStore, openSqlite, ReviewStore, UserStore } from '@ai-review/db';
+import { LogStore, HookTokenStore, openSqlite, ReviewStore, UserStore } from '@ai-review/db';
 import { createFileHistory, createGitRunner, createIgnoreRules, GitReader } from '@ai-review/diff';
 import { TokenBudget, createConfiguredProviders } from '@ai-review/llm';
 import { runReviewPipeline } from '@ai-review/core';
 import type { PipelineDeps } from '@ai-review/core';
 import { AiReviewConfigSchema, loadConfig } from '@ai-review/shared';
-import type { AiReviewConfig } from '@ai-review/shared';
+import type { AiReviewConfig, ReviewSource } from '@ai-review/shared';
 import { buildDefaultRegistry, resolveEnabledTools } from '@ai-review/tools';
+import { resolveReviewDimensions } from '@ai-review/core';
 import { AuditService } from './audit.js';
 import { AvatarStore } from './avatar.js';
 import { buildApp } from './app.js';
@@ -48,16 +49,20 @@ function parseArgs(argv: readonly string[]): ServerCliOptions {
   };
 }
 
-/** 组装服务端审查流水线；Provider 无法使用时仍保留确定性的 mock fallback。 */
+/**
+ * 组装服务端审查流水线；Provider 无法使用时仍保留确定性的 mock fallback。
+ * @param source 审查来源（staged/worktree/commit/range），由发起方指定
+ */
 function createPipelineDeps(
   repoPath: string,
   mode: 'fast' | 'full',
   config: AiReviewConfig,
   knowledge: ReturnType<typeof createKnowledgeManager>,
+  source: ReviewSource,
 ): PipelineDeps {
   const git = createGitRunner(repoPath);
   return {
-    gitReader: new GitReader(git),
+    gitReader: new GitReader(git, repoPath),
     rag: knowledge.retriever,
     ignores: createIgnoreRules(config.review.ignorePatterns),
     history: createFileHistory(git),
@@ -72,6 +77,10 @@ function createPipelineDeps(
     modelName:
       config.llm.provider === 'mock' ? 'mock + 静态分析' : `${config.llm.model} + 静态分析`,
     mode,
+    source,
+    dimensions: resolveReviewDimensions(config.review.dimensions),
+    maxFiles: config.review.maxFiles,
+    maxChangedLines: config.review.maxChangedLines,
   };
 }
 
@@ -112,6 +121,7 @@ export async function startServer(options: ServerCliOptions): Promise<void> {
   const sqlite = openSqlite(options.dbFile);
   const store = new ReviewStore(sqlite);
   const users = new UserStore(sqlite);
+  const hookTokens = new HookTokenStore(sqlite);
   // 审计日志：SQLite 落库（页面查询）+ Logger（控制台 + 按日文件归档），配置项总开关
   const logs = new LogStore(sqlite);
   const audit = new AuditService(
@@ -134,10 +144,10 @@ export async function startServer(options: ServerCliOptions): Promise<void> {
   const readLiveConfig = createLiveConfigReader(configPath, config);
   const service = new ReviewService(
     store,
-    (repoPath, mode) => {
+    (repoPath, mode, source) => {
       const liveConfig = readLiveConfig();
       return {
-        ...createPipelineDeps(repoPath, mode, liveConfig, knowledge),
+        ...createPipelineDeps(repoPath, mode, liveConfig, knowledge, source),
         reviewCache,
       };
     },
@@ -156,6 +166,9 @@ export async function startServer(options: ServerCliOptions): Promise<void> {
     knowledge,
     avatars: avatarStore,
     audit,
+    hookTokens,
+    hookTimeoutMs: config.server.hookTimeoutMs,
+    mcpEnabled: config.server.mcpEnabled,
     // 服务端参数（env > config > 默认）：允许审查的仓库根目录、开放注册、Cookie Secure、信任代理
     // 开放注册仅在显式开启时注入；关闭时保留“首个管理员引导”语义（无用户时仍可注册首账号）
     allowedRoots: settings.allowedRoots,

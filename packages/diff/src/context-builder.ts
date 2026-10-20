@@ -7,6 +7,7 @@ import type {
   FunctionSignature,
   IgnoreRules,
   RagRetriever,
+  ReviewSource,
 } from '@ai-review/shared';
 import { getTreeSitterContext } from './ast-foreign.js';
 import { createIgnoreRules, filterMeaningfulDiffs } from './filter.js';
@@ -126,9 +127,10 @@ function buildMetadata(contexts: FileContext[]): CodeContext['metadata'] {
 
 /**
  * 从 diff 源构建 AI 审查上下文。
- * 默认源是暂存区（index）；构造时传入 baseRef 则切换为 base...HEAD 区间（CI 模式）——
- * 两条路径共享同一套过滤与上下文构建，仅"取哪份内容"不同：
- * 暂存模式以 index 为唯一事实源（git show :path），区间模式以 HEAD 为新侧事实源（git show HEAD:path）。
+ * 审查来源由 ReviewSource 描述（暂存区 / 工作区 / 单提交 / 区间）——
+ * 四条路径共享同一套过滤与上下文构建，仅"取哪份 diff 与新侧内容"不同：
+ * staged 以 index 为唯一事实源（git show :path），commit/range 以对应提交为新侧事实源，
+ * worktree 直接读取磁盘文件（HEAD 与工作区的差异）。
  * @throws {Error} diff 读取失败时透传 Git 错误
  */
 export class DiffContextBuilder {
@@ -137,31 +139,26 @@ export class DiffContextBuilder {
     private readonly rag: RagRetriever,
     private readonly ignores: IgnoreRules = createIgnoreRules([]),
     private readonly contextRadius = 50,
-    /** CI 区间模式（方案 3.11 `run --base <ref>`）；undefined 表示默认暂存区模式 */
-    private readonly baseRef?: string,
+    /** 审查来源；缺省为暂存区（与既有行为一致） */
+    private readonly source: ReviewSource = { target: 'staged' },
     /** RAG 召回数量；由 .ai-review.yml 的 rag.topK 注入 */
     private readonly ragTopK = 5,
   ) {}
 
   /**
    * 读取、过滤并并行构建文件级上下文。
-   * @returns 审查上下文包
+   * 同时返回原始 diff，使流水线无需重复执行一次 `git diff`。
+   * @returns 审查上下文包与原始 unified diff
    */
-  public async build(): Promise<CodeContext> {
-    const rawDiff =
-      this.baseRef === undefined
-        ? await this.gitReader.readStagedDiff()
-        : await this.gitReader.readRangeDiff(this.baseRef);
+  public async build(): Promise<{ context: CodeContext; rawDiff: string }> {
+    const rawDiff = await this.gitReader.readDiff(this.source);
     const diffs = filterMeaningfulDiffs(parseUnifiedDiff(rawDiff), this.ignores);
     const contexts = await pMap(diffs, (diff) => this.buildFileContext(diff), { concurrency: 8 });
-    return { files: contexts, metadata: buildMetadata(contexts) };
+    return { context: { files: contexts, metadata: buildMetadata(contexts) }, rawDiff };
   }
 
   private async buildFileContext(diff: FileDiff): Promise<FileContext> {
-    const newSideContent =
-      this.baseRef === undefined
-        ? await this.gitReader.readStagedFile(diff.path)
-        : await this.gitReader.readHeadFile(diff.path);
+    const newSideContent = await this.gitReader.readFileAt(diff.path, this.source);
     const language = getLanguage(diff.path);
     const astContext =
       language === 'typescript' || language === 'javascript'

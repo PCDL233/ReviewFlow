@@ -1,8 +1,13 @@
 import { execFile } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { promisify } from 'node:util';
-import type { GitRunner } from '@ai-review/shared';
+import type { GitRunner, ReviewSource } from '@ai-review/shared';
 
 const execFileAsync = promisify(execFile);
+
+/** 审查来源对应的新侧内容定位方式 */
+type ContentRef = { kind: 'index' } | { kind: 'ref'; ref: string } | { kind: 'worktree' };
 
 /**
  * 创建限定仓库目录的 Git 命令执行器。
@@ -21,28 +26,109 @@ export function createGitRunner(repoPath: string): GitRunner {
 }
 
 /**
- * 读取暂存区 diff 与 index blob。
- * @throws {Error} Git 仓库无效或命令执行失败
+ * 审查来源 → git diff 参数与"新侧内容"定位。
+ * 集中在一处，避免调用方各自拼装 git 参数导致语义漂移。
+ * @param source 审查来源
+ * @returns diff 参数数组、新侧内容定位与报告用的提交引用
+ */
+export function resolveSource(source: ReviewSource): {
+  diffArgs: string[];
+  content: ContentRef;
+  commitRef: string;
+} {
+  switch (source.target) {
+    case 'staged':
+      return { diffArgs: ['--cached'], content: { kind: 'index' }, commitRef: 'HEAD' };
+    case 'worktree':
+      return { diffArgs: [], content: { kind: 'worktree' }, commitRef: 'HEAD' };
+    case 'commit':
+      // <sha>^! 只展开该提交自身的变更（父提交 → 该提交）
+      return {
+        diffArgs: [`${source.commit}^!`],
+        content: { kind: 'ref', ref: source.commit },
+        commitRef: source.commit,
+      };
+    case 'range':
+      return {
+        diffArgs: [`${source.base}...${source.head ?? 'HEAD'}`],
+        content: { kind: 'ref', ref: source.head ?? 'HEAD' },
+        commitRef: source.head ?? 'HEAD',
+      };
+  }
+}
+
+/** 工作区状态计数（git status --porcelain=v1 的口径，Hook/Web/报告共用） */
+export type GitStatusCounts = {
+  branch: string;
+  stagedFiles: number;
+  unstagedFiles: number;
+  untrackedFiles: number;
+};
+
+/**
+ * 读取暂存区/区间 diff 与文件内容。
+ * 所有 git 调用显式传参数组（规范 §6.2，规避 Windows shell 转义差异）。
  */
 export class GitReader {
-  constructor(private readonly git: GitRunner) {}
+  constructor(
+    private readonly git: GitRunner,
+    /** worktree 目标读取磁盘内容所需；缺省时该目标降级为仅 diff 审查 */
+    private readonly repoPath?: string,
+  ) {}
 
   /**
-   * 读取暂存区快照的 unified diff。
-   * @returns 暂存区 diff 文本
+   * 读取审查来源对应的 unified diff。
+   * @param source 审查来源
+   * @param unified unified 上下文行数
+   * @returns diff 文本
    */
-  public readStagedDiff(): Promise<string> {
-    return this.git('diff', '--cached', '--unified=50');
+  public readDiff(source: ReviewSource, unified = 50): Promise<string> {
+    return this.git('diff', ...resolveSource(source).diffArgs, `--unified=${unified}`);
   }
 
   /**
-   * 读取 base...HEAD 区间的 unified diff（CI 模式，方案 3.11 `run --base <ref>`）。
+   * 读取暂存区快照的 unified diff（保持既有调用方兼容）。
+   * @returns 暂存区 diff 文本
+   */
+  public readStagedDiff(): Promise<string> {
+    return this.readDiff({ target: 'staged' });
+  }
+
+  /**
+   * 读取 base...HEAD 区间的 unified diff（CI 模式）。
    * 三点语法取 merge-base 起算的变更，PR 分支上对 base 的最新提交不产生噪音 diff。
    * @param base 起始引用（分支名 / SHA）
    * @returns 区间 diff 文本
    */
   public readRangeDiff(base: string): Promise<string> {
-    return this.git('diff', '--unified=50', `${base}...HEAD`);
+    return this.readDiff({ target: 'range', base });
+  }
+
+  /**
+   * 读取审查来源下某文件的新侧完整内容。
+   * @param path 仓库内相对路径
+   * @param source 审查来源
+   * @returns 新侧内容；文件不存在（删除）时返回空串
+   */
+  public async readFileAt(path: string, source: ReviewSource): Promise<string> {
+    const { content } = resolveSource(source);
+    if (content.kind === 'worktree') {
+      if (this.repoPath === undefined) return '';
+      try {
+        return await readFile(join(this.repoPath, path), 'utf8');
+      } catch {
+        // 磁盘上不存在（已删除或仅存在于索引）时降级为仅 diff 审查
+        return '';
+      }
+    }
+    try {
+      return await this.git(
+        'show',
+        `${content.kind === 'index' ? ':' : `${content.ref}:`}${path}`,
+      );
+    } catch {
+      return '';
+    }
   }
 
   /**
@@ -50,26 +136,17 @@ export class GitReader {
    * @param path 仓库内相对路径
    * @returns index blob 内容；删除文件没有 blob 时返回空串
    */
-  public async readStagedFile(path: string): Promise<string> {
-    try {
-      return await this.git('show', `:${path}`);
-    } catch {
-      return '';
-    }
+  public readStagedFile(path: string): Promise<string> {
+    return this.readFileAt(path, { target: 'staged' });
   }
 
   /**
-   * 读取文件在 HEAD 提交中的完整内容（区间模式的"新侧"内容源——
-   * 区间审查没有 index 语义，HEAD 即待审内容）。
+   * 读取文件在 HEAD 提交中的完整内容。
    * @param path 仓库内相对路径
    * @returns HEAD blob 内容；文件不存在（被删除）时返回空串
    */
-  public async readHeadFile(path: string): Promise<string> {
-    try {
-      return await this.git('show', `HEAD:${path}`);
-    } catch {
-      return '';
-    }
+  public readHeadFile(path: string): Promise<string> {
+    return this.readFileAt(path, { target: 'range', base: 'HEAD' });
   }
 
   /**
@@ -78,5 +155,61 @@ export class GitReader {
    */
   public readBranch(): Promise<string> {
     return this.git('branch', '--show-current');
+  }
+
+  /**
+   * 读取 HEAD 完整哈希（报告 meta.commitHash 的数据源）。
+   * @returns HEAD 哈希；仓库尚无提交时返回 null
+   */
+  public async readHeadCommit(): Promise<string | null> {
+    try {
+      return (await this.git('rev-parse', 'HEAD')).trim() || null;
+    } catch {
+      // 空仓库（无任何提交）时 rev-parse HEAD 会失败；审查仍可继续
+      return null;
+    }
+  }
+
+  /**
+   * 读取提交元信息（作者与标题），填充报告的 author 字段。
+   * @param ref 提交引用
+   * @returns 作者与标题；读取失败时返回 null
+   */
+  public async readCommitMeta(ref: string): Promise<{ author: string; subject: string } | null> {
+    try {
+      const output = await this.git('show', '-s', '--format=%an%n%s', ref);
+      const [author = '', subject = ''] = output.split(/\r?\n/);
+      return { author, subject };
+    } catch {
+      // 引用无效/存在歧义时不阻断审查，报告 author 留空
+      return null;
+    }
+  }
+
+  /**
+   * 读取工作区状态计数，供 Web 在发起审查前做即时校验。
+   * @returns 分支名与暂存/未暂存/未跟踪文件数
+   * @throws {Error} 非 git 仓库或命令失败
+   */
+  public async readStatus(): Promise<GitStatusCounts> {
+    const [porcelain, branch] = await Promise.all([
+      this.git('status', '--porcelain=v1', '--untracked-files=normal'),
+      this.readBranch(),
+    ]);
+    let stagedFiles = 0;
+    let unstagedFiles = 0;
+    let untrackedFiles = 0;
+    for (const line of porcelain.split(/\r?\n/)) {
+      if (line.length < 3) continue;
+      const index = line[0] ?? ' ';
+      const worktree = line[1] ?? ' ';
+      if (index === '?' && worktree === '?') {
+        untrackedFiles += 1;
+        continue;
+      }
+      if (index !== ' ' && index !== '?') stagedFiles += 1;
+      if (worktree !== ' ' && worktree !== '?') unstagedFiles += 1;
+    }
+    return { branch: branch.trim(), stagedFiles, unstagedFiles, untrackedFiles };
   }
 }

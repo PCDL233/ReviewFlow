@@ -61,9 +61,10 @@ export type FunctionSignature = {
 export type FileContext = {
   diff: FileDiff;
   /**
-   * 暂存区（index）blob 全文，来自 `git show :path`。
-   * 核心正确性约定：审查对象是 index 快照而非工作区（方案 3.1）。
-   * 删除文件为空串（index 中无 blob），降级为仅 diff 审查。
+   * 待审文件的"新侧"全文：staged 来自 index blob（`git show :path`），
+   * commit/range 来自对应提交，worktree 来自工作区磁盘。
+   * 核心正确性约定：审查对象是提交内容而非未暂存改动（方案 3.1）。
+   * 删除文件为空串（无新侧内容），降级为仅 diff 审查。
    */
   stagedContent: string;
   /** 变更行所在函数/类的完整源码片段；无 AST 能力时为空串 */

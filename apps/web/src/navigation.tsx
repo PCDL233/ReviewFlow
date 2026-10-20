@@ -76,7 +76,7 @@ export const ADMIN_NAV_META: NavEntry[] = [
       { key: '/admin/ai', label: 'AI 模型', icon: <RobotOutlined /> },
       { key: '/admin/config', label: '系统配置', icon: <SettingOutlined /> },
       { key: '/admin/init', label: '配置初始化', icon: <FileAddOutlined /> },
-      { key: '/admin/hook', label: 'Hook 安装', icon: <BugOutlined /> },
+      { key: '/admin/hook', label: 'Git Hook 与 CI', icon: <BugOutlined /> },
     ],
   },
   {
@@ -103,7 +103,7 @@ const ADMIN_TITLES: Record<string, string> = {
   '/admin/knowledge': '知识库',
   '/admin/tools': '静态分析工具',
   '/admin/init': '配置初始化',
-  '/admin/hook': 'Git Hook 安装',
+  '/admin/hook': 'Git Hook 与 CI',
   '/admin/metrics': '系统指标',
 };
 

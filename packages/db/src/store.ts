@@ -5,7 +5,7 @@ import { and, count, desc, eq, gte, like, lte, or, sum } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { z } from 'zod';
-import { FindingSchema } from '@ai-review/shared';
+import { FindingSchema, describeReviewSource } from '@ai-review/shared';
 import type {
   AgentCount,
   Finding,
@@ -14,6 +14,7 @@ import type {
   ReviewListQuery,
   ReviewReport,
   ReviewReportDetail,
+  ReviewSource,
   ReviewStats,
   SeverityCount,
   TokenTrendPoint,
@@ -33,6 +34,29 @@ const StoredReportSchema = z.object({
   assessment: z.string(),
   degradedToStatic: z.array(z.string()),
 });
+
+/**
+ * 从落库的 target/source_label 还原审查来源。
+ * source_label 形如 `commit:abc1234`、`range:main...HEAD`，与 describeReviewSource 对称；
+ * 解析失败时退回 staged（存量记录语义），保证重跑不会因脏数据失败。
+ */
+function parseStoredSource(target: string | null, label: string | null): ReviewSource {
+  if (target === 'worktree') return { target: 'worktree' };
+  if (target === 'commit') {
+    const commit = label?.startsWith('commit:') === true ? label.slice('commit:'.length) : '';
+    if (commit !== '') return { target: 'commit', commit };
+  }
+  if (target === 'range') {
+    const body = label?.startsWith('range:') === true ? label.slice('range:'.length) : '';
+    const separator = body.indexOf('...');
+    if (separator > 0) {
+      const base = body.slice(0, separator);
+      const head = body.slice(separator + 3);
+      if (base !== '' && head !== '') return { target: 'range', base, head };
+    }
+  }
+  return { target: 'staged' };
+}
 
 /** 持久层错误（行损坏、目标不存在等） */
 export class StoreError extends Error {
@@ -68,6 +92,8 @@ export class ReviewStore {
         model           TEXT NOT NULL,
         mode            TEXT NOT NULL,
         block_on        TEXT,
+        target          TEXT,
+        source_label    TEXT,
         status          TEXT NOT NULL DEFAULT 'completed',
         risk_score      REAL NOT NULL,
         total_findings  INTEGER NOT NULL DEFAULT 0,
@@ -114,6 +140,8 @@ export class ReviewStore {
       'ALTER TABLE reviews ADD COLUMN diff_text TEXT',
       'ALTER TABLE reviews ADD COLUMN error_message TEXT',
       'ALTER TABLE reviews ADD COLUMN block_on TEXT',
+      'ALTER TABLE reviews ADD COLUMN target TEXT',
+      'ALTER TABLE reviews ADD COLUMN source_label TEXT',
     ]) {
       try {
         sqlite.exec(ddl);
@@ -180,6 +208,8 @@ export class ReviewStore {
       errorMessage?: string | null;
       /** 发起时配置的阻断阈值（BLOCKER/WARNING/NIT）；持久化供 SSE 晚连接重放按原阈值重算 blocking */
       blockOn?: 'BLOCKER' | 'WARNING' | 'NIT';
+      /** 审查来源；持久化供 rerun 复现同一范围 */
+      source?: ReviewSource;
     } = {},
   ): string {
     const reviewId = report.meta.reviewId;
@@ -198,6 +228,8 @@ export class ReviewStore {
           model: report.meta.model,
           mode: report.meta.mode,
           blockOn: options.blockOn ?? null,
+          target: options.source?.target ?? null,
+          sourceLabel: options.source === undefined ? null : describeReviewSource(options.source),
           status: report.meta.status ?? 'completed',
           riskScore: report.meta.riskScore,
           totalFindings: report.findings.length,
@@ -265,6 +297,9 @@ export class ReviewStore {
       reviewId: row.id,
       repoPath: row.repoPath,
       branch: row.branch,
+      commitHash: row.commitHash,
+      ...(row.target === null ? {} : { target: row.target as ReviewListItem['target'] }),
+      ...(row.sourceLabel === null ? {} : { sourceLabel: row.sourceLabel }),
       model: row.model,
       mode: row.mode,
       status: row.status,
@@ -324,6 +359,9 @@ export class ReviewStore {
         reviewId: row.id,
         repoPath: row.repoPath,
         branch: row.branch,
+        commitHash: row.commitHash,
+        ...(row.target === null ? {} : { target: row.target as ReviewListItem['target'] }),
+        ...(row.sourceLabel === null ? {} : { sourceLabel: row.sourceLabel }),
         model: row.model,
         mode: row.mode,
         status: row.status,
@@ -384,10 +422,11 @@ export class ReviewStore {
     };
   }
 
-  /** 读取审查输入，供服务端重跑时复用原始仓库、模式与阻断阈值。 */
+  /** 读取审查输入，供服务端重跑时复用原始仓库、模式、审查来源与阻断阈值。 */
   public getReviewInput(reviewId: string): {
     repoPath: string;
     mode: 'fast' | 'full';
+    source: ReviewSource;
     blockOn: 'BLOCKER' | 'WARNING' | 'NIT' | null;
     createdBy: string | null;
   } {
@@ -396,6 +435,8 @@ export class ReviewStore {
         repoPath: reviews.repoPath,
         mode: reviews.mode,
         blockOn: reviews.blockOn,
+        target: reviews.target,
+        sourceLabel: reviews.sourceLabel,
         createdBy: reviews.createdBy,
       })
       .from(reviews)
@@ -405,9 +446,26 @@ export class ReviewStore {
     return {
       repoPath: row.repoPath,
       mode: row.mode,
+      source: parseStoredSource(row.target, row.sourceLabel),
       blockOn: row.blockOn,
       createdBy: row.createdBy,
     };
+  }
+
+  /**
+   * 读取历史审查出现过的仓库路径（去重），供 Web 的仓库选择器复用。
+   * @param limit 最多返回的记录数（按创建时间倒序取）
+   * @returns 仓库路径列表（可能重复，调用方负责去重）
+   */
+  public listRepoPaths(limit = 200): string[] {
+    return this.db
+      .select({ repoPath: reviews.repoPath })
+      .from(reviews)
+      .groupBy(reviews.repoPath)
+      .orderBy(desc(reviews.repoPath))
+      .limit(limit)
+      .all()
+      .map((row) => row.repoPath);
   }
 
   /** 读取原始 diff；旧记录没有持久化 diff 时返回 null。 */

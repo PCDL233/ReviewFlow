@@ -25,4 +25,8 @@ export type ReviewMetrics = {
   healRounds: number;
   /** 审查缓存命中文件数（方案 3.0 步骤 8：内容哈希去重省去的 LLM 调用） */
   cacheHits: number;
+  /** 因 review.maxFiles / maxChangedLines 超出上限而未纳入 LLM 审查的文件（须在报告中标注） */
+  truncatedFiles: string[];
+  /** 本次实际启用的 LLM 审查维度（review.dimensions 的交集） */
+  dimensions: string[];
 };

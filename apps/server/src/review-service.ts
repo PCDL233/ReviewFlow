@@ -1,9 +1,9 @@
 import { getMaxRiskScore, runReviewPipeline } from '@ai-review/core';
 import type { PipelineDeps, PipelineNodeName, ReviewState } from '@ai-review/core';
 import type { ReviewStore } from '@ai-review/db';
-import { severityMeetsThreshold } from '@ai-review/shared';
+import { describeReviewSource, severityMeetsThreshold } from '@ai-review/shared';
+import type { ReviewReport, ReviewSource, ReviewStageEvent } from '@ai-review/shared';
 import { deriveQualityNotes, deriveSuggestions } from '@ai-review/report';
-import type { ReviewReport, ReviewStageEvent } from '@ai-review/shared';
 import type { ReviewMetrics } from './metrics.js';
 
 // SSE 事件契约以 shared 为单一事实源，此处转出口供既有调用方使用
@@ -29,14 +29,22 @@ function isPipelineNodeName(node: string): node is PipelineNodeName {
 export type StartReviewOptions = {
   repoPath: string;
   mode: 'fast' | 'full';
+  /** 审查来源（暂存区/工作区/单提交/区间）；缺省为暂存区 */
+  source?: ReviewSource;
   /** 阻断阈值，默认 BLOCKER（退出码契约的 BLOCKER 级语义） */
   blockOn?: 'BLOCKER' | 'WARNING' | 'NIT';
-  /** 发起人用户 id（Web 端数据隔离依据；CLI 直跑路径不传） */
+  /** 发起人用户 id（Web 端数据隔离依据） */
   createdBy?: string;
+  /** 是否保留 PRAISE 级发现（report.includePraise）；缺省保留 */
+  includePraise?: boolean;
 };
 
 /** 组装流水线依赖；Provider 链由配置选择云端、本地 Ollama 与 mock 保底。 */
-export type PipelineDepsFactory = (repoPath: string, mode: 'fast' | 'full') => PipelineDeps;
+export type PipelineDepsFactory = (
+  repoPath: string,
+  mode: 'fast' | 'full',
+  source: ReviewSource,
+) => PipelineDeps;
 
 /** 允许测试注入假流水线；生产即 @ai-review/core 的 runReviewPipeline */
 export type PipelineRunner = typeof runReviewPipeline;
@@ -142,12 +150,13 @@ export class ReviewService {
     }
   }
 
-  /** 使用原审查的仓库、模式与阻断阈值创建新任务。 */
+  /** 使用原审查的仓库、模式、审查来源与阻断阈值创建新任务。 */
   public rerunReview(reviewId: string, createdBy?: string): string {
     const input = this.store.getReviewInput(reviewId);
     return this.startReview({
       repoPath: input.repoPath,
       mode: input.mode,
+      source: input.source,
       ...(input.blockOn !== null ? { blockOn: input.blockOn } : {}),
       ...(createdBy === undefined ? {} : { createdBy }),
     });
@@ -161,6 +170,38 @@ export class ReviewService {
       set.delete(listener);
       if (set.size === 0) this.listeners.delete(reviewId);
     };
+  }
+
+  /**
+   * 等待审查进入终态（Hook / CI 的同步审查端点使用）。
+   * 终态可能是 completed/failed/cancelled；超时返回 null，由调用方映射为退出码 3。
+   * @param reviewId 审查 ID
+   * @param timeoutMs 超时毫秒数
+   * @returns 终态事件；超时返回 null
+   */
+  public async waitForTerminal(
+    reviewId: string,
+    timeoutMs: number,
+  ): Promise<ReviewStageEvent | null> {
+    const remembered = this.terminalEvents.get(reviewId);
+    if (remembered !== undefined) return remembered;
+    return new Promise<ReviewStageEvent | null>((resolve) => {
+      let settled = false;
+      const finish = (event: ReviewStageEvent | null): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        unsubscribe();
+        resolve(event);
+      };
+      const unsubscribe = this.subscribe(reviewId, (event) => {
+        if (event.type !== 'stage') finish(event);
+      });
+      const timer = setTimeout(() => finish(null), timeoutMs);
+      // 订阅前任务可能已终结（goroutine 已广播完），补一次检查避免永久等待
+      const already = this.terminalEvents.get(reviewId);
+      if (already !== undefined) finish(already);
+    });
   }
 
   private emit(event: ReviewStageEvent): void {
@@ -250,7 +291,7 @@ export class ReviewService {
       return;
     }
     try {
-      const deps = this.depsFactory(options.repoPath, options.mode);
+      const deps = this.depsFactory(options.repoPath, options.mode, options.source ?? { target: 'staged' });
       const state = await this.runner(deps, {
         reviewId,
         signal: controller.signal,
@@ -276,6 +317,7 @@ export class ReviewService {
       this.store.saveReport(report, options.createdBy, {
         diffText: state.rawDiff,
         ...(options.blockOn === undefined ? {} : { blockOn: options.blockOn }),
+        ...(options.source === undefined ? {} : { source: options.source }),
       });
       this.metrics?.recordCompleted(report);
       // 与存储列同口径（含流水线阶段标记的误报），SSE 实时与晚连接重放数值一致
@@ -303,7 +345,7 @@ export class ReviewService {
     }
   }
 
-  /** 与 CLI run.ts 的报告装配保持同一形状（方案 3.8 五段式） */
+  /** 由流水线最终状态装配五段式报告（方案 3.8） */
   private async buildReport(
     reviewId: string,
     options: StartReviewOptions,
@@ -313,27 +355,50 @@ export class ReviewService {
     const blocking = state.findings.some((finding) =>
       severityMeetsThreshold(finding.severity, options.blockOn ?? 'BLOCKER'),
     );
-    const branch = (await deps.gitReader.readBranch()).trim() || 'HEAD';
+    const source: ReviewSource = options.source ?? { target: 'staged' };
+    // 报告必须可追溯到具体提交：commit/range 取目标提交，staged/worktree 取 HEAD
+    const commitRef =
+      source.target === 'commit' ? source.commit : source.target === 'range' ? (source.head ?? 'HEAD') : 'HEAD';
+    const [branch, commitHash, commitMeta] = await Promise.all([
+      deps.gitReader.readBranch(),
+      deps.gitReader.readHeadCommit(),
+      deps.gitReader.readCommitMeta(commitRef),
+    ]);
     const suggestions = deriveSuggestions(state.findings);
     const qualityNotes = deriveQualityNotes(
       state.context.metadata.totalFiles,
       state.findings,
       state.metrics.degradedToStatic,
     );
+    // report.includePraise 决定 PRAISE 是否进入报告与统计（关闭后仅保留问题类发现）
+    const findings =
+      options.includePraise === false
+        ? state.findings.filter((finding) => finding.severity !== 'PRAISE')
+        : state.findings;
+    const truncated = state.metrics.truncatedFiles ?? [];
+    const notes =
+      truncated.length === 0
+        ? qualityNotes
+        : [
+            ...qualityNotes,
+            `以下 ${truncated.length} 个文件因超出单次审查规模上限（review.maxFiles / maxChangedLines）未做 LLM 审查，仅执行静态分析：${truncated.join(', ')}`,
+          ];
     return {
       meta: {
         reviewId,
         repoPath: options.repoPath,
-        branch,
+        branch: (branch.trim() || 'HEAD') as string,
+        ...(commitHash === null ? {} : { commitHash }),
+        ...(commitMeta === null ? {} : { author: commitMeta.author }),
         model: deps.modelName ?? 'mock + 静态分析',
         mode: options.mode,
         riskScore: getMaxRiskScore(state.plan),
         durationMs: state.metrics.durationMs,
         tokenUsed: state.metrics.totalTokens,
       },
-      summary: `本次审查覆盖 ${state.context.metadata.totalFiles} 个文件，发现 ${state.findings.length} 个问题。`,
-      findings: state.findings,
-      qualityNotes,
+      summary: `本次审查覆盖 ${state.context.metadata.totalFiles} 个文件（${describeReviewSource(source)}），发现 ${findings.length} 个问题。`,
+      findings,
+      qualityNotes: notes,
       suggestions,
       assessment: blocking
         ? '存在达到阻断阈值的发现。Changes should not be committed until blocking findings are addressed.'

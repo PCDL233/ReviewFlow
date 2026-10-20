@@ -9,9 +9,6 @@ catalogs:
     '@ai-sdk/openai':
       specifier: ^2.0.127
       version: 2.0.127
-    '@clack/prompts':
-      specifier: ^1.8.0
-      version: 1.8.0
     '@hono/node-server':
       specifier: ^2.1.1
       version: 2.1.1
@@ -60,9 +57,6 @@ catalogs:
     better-sqlite3:
       specifier: ^13.0.3
       version: 13.0.3
-    commander:
-      specifier: ^15.0.0
-      version: 15.0.0
     dayjs:
       specifier: ^1.11.13
       version: 1.11.23
@@ -149,9 +143,6 @@ importers:
 
   .:
     devDependencies:
-      '@ai-review/cli':
-        specifier: workspace:*
-        version: link:apps/cli
       '@ai-review/eslint-config':
         specifier: workspace:*
         version: link:tooling/eslint-config
@@ -170,64 +161,6 @@ importers:
       typescript:
         specifier: 'catalog:'
         version: 6.0.3
-
-  apps/cli:
-    dependencies:
-      '@ai-review/agents':
-        specifier: workspace:*
-        version: link:../../packages/agents
-      '@ai-review/core':
-        specifier: workspace:*
-        version: link:../../packages/core
-      '@ai-review/diff':
-        specifier: workspace:*
-        version: link:../../packages/diff
-      '@ai-review/llm':
-        specifier: workspace:*
-        version: link:../../packages/llm
-      '@ai-review/rag':
-        specifier: workspace:*
-        version: link:../../packages/rag
-      '@ai-review/report':
-        specifier: workspace:*
-        version: link:../../packages/report
-      '@ai-review/server':
-        specifier: workspace:*
-        version: link:../server
-      '@ai-review/shared':
-        specifier: workspace:*
-        version: link:../../packages/shared
-      '@ai-review/tools':
-        specifier: workspace:*
-        version: link:../../packages/tools
-      '@ai-sdk/openai':
-        specifier: 'catalog:'
-        version: 2.0.127(zod@4.6.2)
-      '@clack/prompts':
-        specifier: 'catalog:'
-        version: 1.8.0
-      ai:
-        specifier: 'catalog:'
-        version: 5.0.257(zod@4.6.2)
-      commander:
-        specifier: 'catalog:'
-        version: 15.0.0
-      yaml:
-        specifier: 'catalog:'
-        version: 2.9.0
-    devDependencies:
-      '@ai-review/tsconfig':
-        specifier: workspace:*
-        version: link:../../tooling/tsconfig
-      '@types/node':
-        specifier: 'catalog:'
-        version: 22.20.2
-      typescript:
-        specifier: 'catalog:'
-        version: 6.0.3
-      vitest:
-        specifier: 'catalog:'
-        version: 5.0.0(@opentelemetry/api@1.9.1)(@types/node@22.20.2)(vite@8.3.0(@types/node@22.20.2)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0))
 
   apps/server:
     dependencies:
@@ -264,6 +197,9 @@ importers:
       '@hono/zod-validator':
         specifier: 'catalog:'
         version: 0.9.1(hono@4.13.7)(zod@4.6.2)
+      '@modelcontextprotocol/sdk':
+        specifier: 'catalog:'
+        version: 1.30.0(@cfworker/json-schema@4.1.1)(zod@4.6.2)
       hono:
         specifier: 'catalog:'
         version: 4.13.7
@@ -390,6 +326,9 @@ importers:
       '@langchain/langgraph':
         specifier: 'catalog:'
         version: 1.4.14(@langchain/core@1.2.10(@opentelemetry/api@1.9.1))(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(zod@4.6.2)
+      p-map:
+        specifier: 'catalog:'
+        version: 7.0.7
     devDependencies:
       '@ai-review/tsconfig':
         specifier: workspace:*
@@ -712,14 +651,6 @@ packages:
 
   '@cfworker/json-schema@4.1.1':
     resolution: {integrity: sha512-gAmrUZSGtKc3AiBL71iNWxDsyUC5uMaKKGdvzYsBoTW/xi42JQHl7eKV2OYzCUqvc+D2RCcf7EXY2iCyFIk6og==}
-
-  '@clack/core@1.5.0':
-    resolution: {integrity: sha512-zNikCcd8BbcEvzzG1sbXFrRHFk5kHPrpwZwksPvf9qyQO1Teb7JaXaOAxXZei9nZLDW0gaZawiuTCji88bTBhw==}
-    engines: {node: '>= 20.12.0'}
-
-  '@clack/prompts@1.8.0':
-    resolution: {integrity: sha512-PXzLZ8N34rxmuo4dJg3xtOXhcBse94qGjDqsteoEYrFrrZ5FSjIGwMAuOcv64ln8rHVBBD06XeVGr+/JX+plcA==}
-    engines: {node: '>= 20.12.0'}
 
   '@emnapi/core@1.10.0':
     resolution: {integrity: sha512-yq6OkJ4p82CAfPl0u9mQebQHKPJkY7WrIuk205cTYnYe+k2Z8YBh11FrbRG/H6ihirqcacOgl2BIO8oyMQLeXw==}
@@ -2060,10 +1991,6 @@ packages:
     resolution: {integrity: sha512-85UdvzTNx/+s5CkSgBm/0hzP80RFHAa7PsfeADE5ezZF3uHz3/Tqj9gIKGT9PTtpycc3Ua64T0oVulGfKxzfqg==}
     engines: {node: '>=12.20.0'}
 
-  commander@15.0.0:
-    resolution: {integrity: sha512-z67u4ZhzCL/Tydu1lJARtEZYWbWaN7oYLHbsuzocr6y4N6WZAagG3RQ4FW61V1/0+jImpj293XfrcYnd1qxtPg==}
-    engines: {node: '>=22.12.0'}
-
   comment-parser@1.4.9:
     resolution: {integrity: sha512-+2AvZKjJaNq9GQljm3tr0utwrig5BL+jgJGvz5rDpGKNIp+ojcRXWUwBbh/sGIi1QCprR6PsKFakub+w1v+4hQ==}
     engines: {node: '>= 12.0.0'}
@@ -2369,17 +2296,8 @@ packages:
   fast-levenshtein@2.0.6:
     resolution: {integrity: sha512-DCXu6Ifhqcks7TZKY3Hxp3y6qphY5SJZmrWMDrKcERSOXWQdMhU9Ig/PYrzyw/ul9jOIyh0N4M0tbC5hodg8dw==}
 
-  fast-string-truncated-width@3.0.3:
-    resolution: {integrity: sha512-0jjjIEL6+0jag3l2XWWizO64/aZVtpiGE3t0Zgqxv0DPuxiMjvB3M24fCyhZUO4KomJQPj3LTSUnDP3GpdwC0g==}
-
-  fast-string-width@3.0.2:
-    resolution: {integrity: sha512-gX8LrtNEI5hq8DVUfRQMbr5lpaS4nMIWV+7XEbXk2b8kiQIizgnlr12B4dA3ZEx3308ze0O4Q1R+cHts8kyUJg==}
-
   fast-uri@3.1.7:
     resolution: {integrity: sha512-dOvZVzjdZdz7phd9v6jCbwxrBW3fK6n8Rc0CtdmM4bumzMnxywBYhuph6J819RRw/ku+rLbelwfMunktuzVVHg==}
-
-  fast-wrap-ansi@0.2.2:
-    resolution: {integrity: sha512-7F2Fl+TjRSenLqlU3UjSH0iyqopqoZIu7eZVpEirP2g1GtWa2G/ecEmBdgz31+Mxr+ELclgg6sokpSFIQiZ02Q==}
 
   fdir@6.5.0:
     resolution: {integrity: sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==}
@@ -2959,9 +2877,6 @@ packages:
   siginfo@2.0.0:
     resolution: {integrity: sha512-ybx0WO1/8bSBLEWXZvEd7gMW3Sn3JFlW3TvX1nREbDLRNQNaeNN8WK0meBwPdAaOI7TtRRRJn/Es1zhrrCHu7g==}
 
-  sisteransi@1.0.5:
-    resolution: {integrity: sha512-bLGGlR1QxBcynn2d5YmDX4MGjlZvy2MRBDRNHLJ8VI6l6+9FUiyTFNJ0IveOSP0bcXgVDPRcfGqA0pjaqUpfVg==}
-
   source-map-js@1.2.1:
     resolution: {integrity: sha512-UXWMKhLOwVKb728IUtQPXxfYU+usdybtUrK/8uGE8CQMvrhOpwvzDBwj0QhSL7MQc7vIsISBG8VQ8+IDQxpfQA==}
     engines: {node: '>=0.10.0'}
@@ -3349,18 +3264,6 @@ snapshots:
       keyv: 5.6.0
 
   '@cfworker/json-schema@4.1.1': {}
-
-  '@clack/core@1.5.0':
-    dependencies:
-      fast-wrap-ansi: 0.2.2
-      sisteransi: 1.0.5
-
-  '@clack/prompts@1.8.0':
-    dependencies:
-      '@clack/core': 1.5.0
-      fast-string-width: 3.0.2
-      fast-wrap-ansi: 0.2.2
-      sisteransi: 1.0.5
 
   '@emnapi/core@1.10.0':
     dependencies:
@@ -4598,8 +4501,6 @@ snapshots:
       table-layout: 4.1.1
       typical: 7.3.0
 
-  commander@15.0.0: {}
-
   comment-parser@1.4.9: {}
 
   compute-scroll-into-view@3.1.1: {}
@@ -4859,17 +4760,7 @@ snapshots:
 
   fast-levenshtein@2.0.6: {}
 
-  fast-string-truncated-width@3.0.3: {}
-
-  fast-string-width@3.0.2:
-    dependencies:
-      fast-string-truncated-width: 3.0.3
-
   fast-uri@3.1.7: {}
-
-  fast-wrap-ansi@0.2.2:
-    dependencies:
-      fast-string-width: 3.0.2
 
   fdir@6.5.0(picomatch@4.0.7):
     optionalDependencies:
@@ -5395,8 +5286,6 @@ snapshots:
       side-channel-weakmap: 1.0.2
 
   siginfo@2.0.0: {}
-
-  sisteransi@1.0.5: {}
 
   source-map-js@1.2.1: {}
 

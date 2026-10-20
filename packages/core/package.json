@@ -24,7 +24,8 @@
     "@ai-review/shared": "workspace:*",
     "@ai-review/tools": "workspace:*",
     "@langchain/core": "catalog:",
-    "@langchain/langgraph": "catalog:"
+    "@langchain/langgraph": "catalog:",
+    "p-map": "catalog:"
   },
   "devDependencies": {
     "@ai-review/tsconfig": "workspace:*",

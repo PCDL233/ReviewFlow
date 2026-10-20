@@ -29,6 +29,8 @@ export function emptyMetrics(): ReviewMetrics {
     degradedToStatic: [],
     healRounds: 0,
     cacheHits: 0,
+    truncatedFiles: [],
+    dimensions: [],
   };
 }
 
@@ -44,12 +46,18 @@ const findingList = Annotation<Finding[]>({
 /**
  * metrics channel：逐字段合并——并行审查节点各自补写 degradedToStatic，
  * 通道级整体替换会丢失兄弟分支的并发写入。
+ * 数组字段用 `?? []` 兜底：测试与旧调用方可能构造缺少新字段的 metrics 对象。
  */
 const metricsChannel = Annotation<ReviewMetrics>({
   reducer: (current, patch) => ({
     ...current,
     ...patch,
-    degradedToStatic: [...new Set([...current.degradedToStatic, ...patch.degradedToStatic])],
+    degradedToStatic: [...new Set([...current.degradedToStatic, ...(patch.degradedToStatic ?? [])])],
+    truncatedFiles: [...new Set([...current.truncatedFiles, ...(patch.truncatedFiles ?? [])])],
+    dimensions:
+      patch.dimensions === undefined || patch.dimensions.length === 0
+        ? current.dimensions
+        : patch.dimensions,
   }),
   default: emptyMetrics,
 });

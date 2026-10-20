@@ -34,10 +34,10 @@ const TOOL_OPTIONS = [
 ];
 
 const DIMENSION_OPTIONS = [
-  { label: '正确性', value: 'correctness' },
-  { label: '安全性', value: 'security' },
-  { label: '性能', value: 'performance' },
-  { label: '可维护性', value: 'maintainability' },
+  { label: '正确性（LLM Agent）', value: 'correctness' },
+  { label: '安全性（LLM Agent）', value: 'security' },
+  { label: '性能（LLM Agent）', value: 'performance' },
+  { label: '可维护性（由静态分析覆盖）', value: 'maintainability' },
 ];
 
 const CONFIG_QUERY_KEY = ['admin-config'] as const;
@@ -180,7 +180,11 @@ export function AdminConfigPage(): ReactElement {
                 ]}
               />
             </Form.Item>
-            <Form.Item label="审查维度" name={['review', 'dimensions']}>
+            <Form.Item
+              label="审查维度"
+              name={['review', 'dimensions']}
+              extra="关闭的维度不再调用对应 LLM Agent（不产生 token 消耗）；可维护性由静态分析工具覆盖。"
+            >
               <Select mode="multiple" options={DIMENSION_OPTIONS} />
             </Form.Item>
             <Form.Item
@@ -193,7 +197,7 @@ export function AdminConfigPage(): ReactElement {
             <Form.Item
               label="阻断阈值"
               name={['review', 'blockOn']}
-              extra="达到该严重度即判定为阻断（CLI 退出码 1）。"
+              extra="达到该严重度即判定为阻断；Hook 与 CI 据此返回退出码 1。"
             >
               <Select
                 options={[
@@ -202,6 +206,20 @@ export function AdminConfigPage(): ReactElement {
                   { label: 'NIT', value: 'NIT' },
                 ]}
               />
+            </Form.Item>
+            <Form.Item
+              label="单次审查文件上限"
+              name={['review', 'maxFiles']}
+              extra="超出后按风险分降序截断，被截断的文件只做静态分析并在报告中标注"
+            >
+              <InputNumber min={1} max={2000} className="full-width" />
+            </Form.Item>
+            <Form.Item
+              label="单次审查变更行上限"
+              name={['review', 'maxChangedLines']}
+              extra="additions + deletions 之和；同样按文件截断并标注"
+            >
+              <InputNumber min={100} max={200_000} className="full-width" />
             </Form.Item>
             <Form.Item label="启用工具" name={['staticAnalysis', 'enabledTools']}>
               <Select mode="multiple" options={TOOL_OPTIONS} />
@@ -263,7 +281,7 @@ export function AdminConfigPage(): ReactElement {
               <Switch />
             </Form.Item>
             <Typography.Paragraph type="secondary" className="config-help">
-              报告配置会影响 CLI 与 Web 两端的默认输出行为。
+              报告默认格式用于网页与接口导出；输出目录仅作提示，Web 端导出由浏览器下载完成。
             </Typography.Paragraph>
           </Card>
 
@@ -335,6 +353,21 @@ export function AdminConfigPage(): ReactElement {
               extra="云端 provider 不可用时的本地兜底模型"
             >
               <Input placeholder="qwen3-coder:30b" />
+            </Form.Item>
+            <Form.Item
+              label="Hook/CI 审查超时"
+              name={['server', 'hookTimeoutMs']}
+              extra="单位：毫秒；超时返回退出码 3（不阻断提交）"
+            >
+              <InputNumber min={10_000} max={600_000} step={10_000} className="full-width" />
+            </Form.Item>
+            <Form.Item
+              label="启用 MCP 端点"
+              name={['server', 'mcpEnabled']}
+              valuePropName="checked"
+              extra="开启后 /api/mcp 以 Streamable HTTP 暴露静态分析工具（需 Bearer 令牌）"
+            >
+              <Switch />
             </Form.Item>
             <Typography.Paragraph type="secondary" className="config-help">
               已设置的环境变量（AI_REVIEW_*）优先于此处配置。

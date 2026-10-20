@@ -6,25 +6,27 @@
 
 ## 功能总览
 
-- **多 Agent 并行审查**：正确性 / 安全 / 性能三个维度经 LangGraph.js fan-out 并行审查，交叉验证抑制幻觉；低置信度 BLOCKER 支持自愈回退，最多 3 轮。
+- **多 Agent 并行审查**：正确性 / 安全 / 性能三个维度经 LangGraph.js fan-out 并行审查，交叉验证抑制幻觉；低置信度 BLOCKER 支持自愈回退，最多 3 轮。`review.dimensions` 可关闭某一维度（关闭后不调用其 Agent，不产生 token 消耗）。
 - **确定性优先**：密钥扫描（CWE-798/321）、圈复杂度和 AST 解析等工具先行，能由确定性工具判断的问题不重复交给 LLM。
 - **多语言上下文提取**：JS/TS 使用 ts-morph，Python/Go/Java 使用 Tree-sitter 官方语法包，按函数边界裁剪上下文；解析失败时降级为行级窗口，不阻塞流水线。
 - **用户自定义审查规则**：管理员可在后台定义正则规则（名称/严重度/文件过滤/匹配范围），在 static 阶段以确定性工具 `custom_rule_check` 执行，支持在线试跑；保存后下一次审查即生效（服务端热重读配置，无需重启）。
-- **风险规划分流**：按 0–100 风险评分选择深度审查、快速审查或仅静态分析；全流程有 token 硬预算，预算耗尽时自动降级并在报告中标注。
+- **风险规划分流**：按 0–100 风险评分选择深度审查、快速审查或仅静态分析；全流程有 token 硬预算与文件数/变更行数上限，超限文件降级为静态分析并在报告中标注。
 - **审查缓存**：按 agent、prompt 版本和代码内容计算哈希，相同代码块可跨审查复用发现，避免重复消耗 LLM。
 - **RAG 知识库**：按 AST/文档边界切块，使用 LanceDB 向量检索与 MiniSearch BM25，经 RRF 融合后注入审查上下文；索引按块级内容哈希增量更新。
 - **fast / full 双模式**：`fast` 用于 pre-commit，目标耗时 ≤15 秒；`full` 用于 CI 和手动深度审查，目标耗时 ≤60 秒。
-- **Web Dashboard**：登录后查看审查历史、五段式报告、diff、行级发现、误报标记、SSE 实时进度和 ECharts 统计分析。
+- **四种审查范围**：暂存区、工作区、单个提交、提交区间——全部可在 Web 上选择，报告记录 commit 与作者以便追溯。
+- **Web Dashboard**：登录后查看审查历史、五段式报告、diff、行级发现、误报标记、SSE 实时进度和 ECharts 统计分析；配置、规则、知识库、Hook 安装全部在页面内完成。
 - **团队权限管理**：首个注册用户自动成为管理员；管理员可以查看全量审查数据、管理用户、编辑配置、维护知识库并查看 Prometheus 指标。
-- **MCP 工具开放**：通过 stdio MCP Server 暴露静态分析工具，可供 Claude Code 等外部 Agent 复用。
+- **Hook / CI 一体化**：管理后台一键把 pre-commit hook 写入仓库，也签发 CI 令牌；两者调用同一个同步审查端点，共用 0/1/2/3 退出码契约。
+- **MCP 工具开放**：静态分析工具经 `/api/mcp`（Streamable HTTP，默认关闭）暴露，可供 Claude Code 等外部 Agent 复用。
 - **可观测性**：提供 `/metrics` Prometheus 指标、`/api/stats` 统计聚合接口，以及登录/操作审计日志（后台页面查询 + 控制台输出 + 按日归档文件）。
 
 ## 系统架构
 
 ```text
 ┌─────────────────────────────────────────────────────────────────┐
-│ 交互层：Git Hook CLI (commander) │ Web Dashboard (React 19)      │
-│        API Server (Hono 4, REST + SSE + 静态托管)                │
+│ 交互层：Web Dashboard (React 19)  │  Git Hook  │  CI           │
+│         API Server (Hono 4, REST + SSE + 静态托管)               │
 ├─────────────────────────────────────────────────────────────────┤
 │ Agent 编排层：LangGraph.js StateGraph                            │
 │   parse → riskPlan → [correctness│security│performance] (并行)   │
@@ -40,13 +42,13 @@
 
 一次审查的业务链路：
 
-1. `git commit` 触发 `.husky/pre-commit`，调用 `ai-review run --staged`。
-2. Git Reader 读取 index 快照，而不是工作区未暂存内容；diff 按文件和函数边界构建上下文。
-3. 风险规划器按文件评分，选择深度审查、快速审查或仅静态分析。
-4. 正确性、安全、性能 Agent 并行执行，并受 token 预算和取消信号约束。
-5. 交叉验证阶段重分类严重度、计算置信度、去重并排序；低置信度 BLOCKER 进入自愈重审。
-6. 生成 Markdown、HTML 或 JSON 报告，按 `blockOn` 阈值决定退出码。
-7. 结果写入 SQLite，审查缓存复用已有发现，Dashboard 通过 SSE 接收进度。
+1. 触发：Web 页面发起、`git commit` 触发 `.husky/pre-commit`，或 CI 调用 `POST /api/hooks/review`。
+2. Git Reader 按所选范围读取 diff（暂存区 / 工作区 / 单个提交 / 区间），而不是无条件读取工作区；diff 按文件和函数边界构建上下文。
+3. 风险规划器按文件评分，选择深度审查、快速审查或仅静态分析；随后施加 token 预算与规模上限。
+4. 配置启用的审查维度 Agent 并行执行，并受 token 预算和取消信号约束。
+5. 交叉验证阶段重分类严重度、计算置信度、去重并排序；低置信度 BLOCKER 进入自愈重审（受预算约束）。
+6. 生成 Markdown、HTML 或 JSON 报告，记录 commit 与作者，按 `blockOn` 阈值判定是否阻断。
+7. 结果写入 SQLite，审查缓存复用已有发现，Dashboard 通过 SSE 接收进度；Hook/CI 拿到退出码决定是否放行。
 
 模式差异：
 
@@ -63,7 +65,6 @@
 | ---------- | ----------------------------------------------------------------------------------------- |
 | 运行时     | Node.js ≥22、TypeScript 6、ESM                                                            |
 | Monorepo   | pnpm 10.24.0、Turborepo                                                                   |
-| CLI        | Commander、@clack/prompts                                                                 |
 | Agent 编排 | LangGraph.js、AI SDK 5                                                                    |
 | 模型       | Anthropic、OpenAI、国内主流（DeepSeek/智谱/Moonshot/通义千问/豆包/MiniMax）、Ollama、mock |
 | 静态分析   | ts-morph、Tree-sitter、确定性 secret/complexity 工具                                      |
@@ -79,18 +80,17 @@
 
 ```text
 apps/
-  cli/       @ai-review/cli     —— Git Hook 与命令行入口
   server/    @ai-review/server  —— Hono API、SSE、/metrics、静态文件托管
   web/       @ai-review/web     —— React 19 Dashboard（Vite + Ant Design + ECharts）
 packages/
-  shared/    配置、API、Finding、退出码等 Zod schema 单一事实源
-  diff/      unified diff、index/HEAD 内容读取、上下文提取
+  shared/    配置、API、Finding、审查来源、退出码等 Zod schema 单一事实源
+  diff/      unified diff、index/分支/提交内容读取、上下文提取
   core/      LangGraph 流水线、风险规划、交叉验证、审查缓存接口
   agents/    ReAct 审查 Agent
-  tools/     静态分析工具总线与 MCP stdio Server
+  tools/     静态分析工具总线与 MCP Server
   rag/       LanceDB + MiniSearch RAG 索引与检索
   llm/       Provider 封装、mock/录制回放、token 预算器
-  db/        Drizzle ORM + SQLite（用户、会话、审查和缓存）
+  db/        Drizzle ORM + SQLite（用户、会话、审查、缓存和 Hook 令牌）
   report/    Markdown / HTML / JSON 报告渲染
 
 tooling/
@@ -120,15 +120,11 @@ pnpm test
 
 ### 2. 初始化配置
 
-在项目根目录运行交互式向导：
+配置文件由管理后台生成，无需终端操作：登录后进入 **管理后台 → 配置初始化** 点击「生成默认配置」，
+系统会依据 `AiReviewConfigSchema` 写出 `.ai-review.yml`；随后在 **系统配置 / AI 模型** 页面直接编辑。
+密钥字段支持 `${ENV_NAME}` 引用，请不要把明文 API Key 提交到 Git。
 
-```bash
-pnpm exec ai-review init
-```
-
-该命令根据 `AiReviewConfigSchema` 生成 `.ai-review.yml`。密钥字段支持 `${ENV_NAME}` 引用，请不要把明文 API Key 提交到 Git。
-
-最小的云端模型配置示例：
+最小的云端模型配置示例（仍通过环境变量提供密钥）：
 
 ```bash
 # PowerShell
@@ -155,104 +151,110 @@ pnpm dev
 
 ### 4. 执行第一次审查
 
+1. 打开 **发起审查** 页面。
+2. 从仓库下拉中选择工作区（或直接粘贴绝对路径）。选中后会显示当前分支、HEAD 提交、暂存/未暂存/未跟踪文件数。
+3. 选择审查范围：
+   - **暂存区**：提交前把关的标准范围（默认）。
+   - **工作区**：HEAD 与磁盘的差异，含未暂存改动。
+   - **单个提交**：回溯或补充审查某次已提交的变更。
+   - **提交区间**：`base...HEAD`，用于合并前检查。
+4. 选择审查模式（fast / full）与阻断阈值，点击「开始审查」，进度通过 SSE 实时刷新。
+5. 完成后点击「查看完整报告」。### 5. 安装 Git Hook（一次点击）
+
+1. 先确保目标仓库已启用 husky v9（`core.hooksPath`）：在仓库内执行一次 `pnpm exec husky init`。
+2. 进入 **管理后台 → Git Hook 与 CI**，选择仓库，点击「安装到此仓库」。
+3. 服务端会写入两个文件并签发令牌：
+
+| 文件 | 作用 |
+| --- | --- |
+| `.husky/pre-commit` | husky 入口，调用 Node 运行器 |
+| `.ai-review/hooks/pre-commit.mjs` | 真正发起审查、按退出码放行/阻断 |
+| `.ai-review-cache/hook-token` | 调用令牌（不进入版本库） |
+| `.gitignore` | 自动补齐 `.ai-review-cache/`、`.ai-review/`，防止令牌被 `git add -A` 提交 |
+
+之后每次 `git commit` 都会自动审查暂存区：发现达到阻断阈值的 Finding 时退出码为 1，阻止提交；服务不可达时退出码为 3，不阻断。
+
+### 6. 首次启动团队版
+
+构建前端后由服务端同端口托管 API 与 Dashboard：
+
 ```bash
-# 审查当前暂存区，默认 fast 模式
-pnpm exec ai-review run --staged
-
-# 本地执行 full 模式
-pnpm exec ai-review run --staged --mode full
-
-# 安装 pre-commit hook（先确保项目已启用 husky v9）
-pnpm exec husky init
-pnpm exec ai-review install-hook
-```
-
-`install-hook` 会写入 `.husky/pre-commit`。Hook 只审查暂存区，发现达到 `BLOCKER` 阻断阈值时退出码为 1。
-
-### 5. 首次启动团队版
-
-启动 API 和 Dashboard 同端口服务：
-
-```bash
-pnpm exec ai-review server --port 8080 --web-dist apps/web/dist
+pnpm build
+node apps/server/dist/main.js --port 8080 --db .ai-review-cache/reviews.db --web-dist apps/web/dist
 ```
 
 首次打开 <http://localhost:8080> 时注册第一个账号。第一个注册账号自动获得 `admin` 角色，建议部署后立即完成注册并安全保存凭据；项目不提供固定的默认管理员密码。之后注册的账号默认是普通用户。
 
-## CLI 使用指南
+## 使用指南（全部在 Web 完成）
 
-CLI 二进制名为 `ai-review`。在当前 Monorepo 中可以使用 `pnpm exec ai-review`，构建并将包加入 PATH 后可直接使用 `ai-review`。
+项目不提供命令行入口。所有能力都在 Dashboard 与 HTTP API 上：
 
-### `ai-review run` —— 执行审查
+| 需求 | 入口 |
+| --- | --- |
+| 发起审查（四种范围） | 用户端「发起审查」 |
+| 查看历史 / 报告 / diff / 误报标记 | 「审查历史」→ 报告详情 |
+| 统计与趋势 | 「统计分析」 |
+| 生成 /.ai-review.yml | 后台「配置初始化」 |
+| 编辑模型、审查、静态分析、知识库、日志、服务端参数 | 后台「系统配置」「AI 模型」 |
+| 维护自定义审查规则（含试跑） | 后台「自定义规则」 |
+| 重建 RAG 索引 | 后台「知识库」 |
+| 在线试跑密钥扫描与复杂度检查 | 后台「分析工具」 |
+| 安装 Git Hook / 管理 CI 令牌 | 后台「Git Hook 与 CI」 |
+| 用户、角色、日志、指标 | 后台对应用户/角色/日志/指标页 |
 
-| 选项                    | 说明                                                    |
-| ----------------------- | ------------------------------------------------------- |
-| `--staged`              | 审查暂存区 diff；默认开启                               |
-| `--base <ref>`          | CI 模式：审查 `<ref>...HEAD` 区间变更                   |
-| `--config <file>`       | 配置文件路径，默认 `.ai-review.yml`                     |
-| `--mode <mode>`         | `fast` 或 `full`；未传时读取配置                        |
-| `--block-on <severity>` | 阻断阈值：`BLOCKER`、`WARNING` 或 `NIT`；未传时读取配置 |
-| `--json`                | 输出 JSON，便于 CI 或脚本消费                           |
+### 审查 API（供 Hook、CI 与脚本使用）
 
-常用示例：
+| 端点 | 鉴权 | 说明 |
+| --- | --- | --- |
+| `POST /api/reviews` | 会话 Cookie | 异步发起审查，返回 `202` + `reviewId`；进度走 SSE |
+| `GET /api/reviews/:id/events` | 会话 Cookie | 实时进度（SSE） |
+| `POST /api/hooks/review` | `Authorization: Bearer <token>` | **同步**审查，响应携带 `exitCode`，供 Hook / CI 判定 |
+| `GET /api/repos` | 会话 Cookie | 仓库发现（扫描允许根目录 + 历史审查记录） |
+| `GET /api/repos/{status,branches,commits}` | 会话 Cookie | 仓库工作区状态、分支、提交列表 |
+| `POST /api/mcp` | Bearer 令牌 | MCP over Streamable HTTP（需在系统配置中开启） |
 
-```bash
-# pre-commit / 本地增量审查
-pnpm exec ai-review run --staged
+`POST /api/reviews` 与 `POST /api/hooks/review` 的请求体：
 
-# CI 审查 base 与 HEAD 之间的变更
-pnpm exec ai-review run --base origin/main --mode full --block-on BLOCKER --json > .ai-review-reports/latest.json
+```json
+{
+  "repoPath": "D:/work/project",
+  "target": "range",
+  "base": "origin/main",
+  "mode": "full",
+  "blockOn": "BLOCKER"
+}
 ```
 
-稳定退出码：
+`target` 取值与必填参数：
 
-| 退出码 | 含义                                                     |
-| ------ | -------------------------------------------------------- |
-| `0`    | 没有发现达到阻断阈值的 Finding                           |
-| `1`    | 存在达到 `blockOn` 级别的发现，阻断提交或 CI 步骤        |
-| `2`    | 配置或环境错误，例如配置校验失败、Git 仓库无效或参数缺失 |
-| `3`    | 审查超时或被取消；默认不作为缺陷阻断提交                 |
+| target | 必填 | 含义 |
+| --- | --- | --- |
+| `staged`（默认） | — | index 与 HEAD 的差异 |
+| `worktree` | — | HEAD 与工作区磁盘的差异 |
+| `commit` | `commit` | 单个提交相对其父提交的差异 |
+| `range` | `base`（`head` 可选，默认 HEAD） | `base...head` 区间 |
 
-### `ai-review init` —— 初始化配置
+引用（分支 / SHA / 相对引用）会经过白名单校验：以 `-` 开头的值一律拒绝，避免 git 参数注入。
 
-交互式生成 `.ai-review.yml`。文件已存在时会先询问是否覆盖；取消操作会保留原文件。
+Hook / CI 响应的稳定退出码（`exitCode` 字段，调用方脚本据此决定是否放行）：
 
-### `ai-review install-hook` —— 安装 Git Hook
+| 退出码 | 含义 |
+| --- | --- |
+| `0` | 没有发现达到阻断阈值的 Finding |
+| `1` | 存在达到 `blockOn` 级别的发现，阻断提交或 CI 步骤 |
+| `2` | 配置或环境错误，例如配置校验失败、Git 仓库无效或参数缺失 |
+| `3` | 审查超时或被取消；默认不作为缺陷阻断提交 |
 
-写入 `.husky/pre-commit`，使用 fast 模式和 `BLOCKER` 阻断阈值。前提是仓库已经通过 `pnpm exec husky init` 激活 husky v9 的 `core.hooksPath`。
+### 知识库索引
 
-### `ai-review index` —— 构建 RAG 知识库索引
+索引重建在后台「知识库」页触发，无需命令行：
 
-| 选项                 | 说明                                                       |
-| -------------------- | ---------------------------------------------------------- |
-| `--paths <paths...>` | 必填；纳入索引的文件或目录，目录递归扫描并跳过常见生成目录 |
-| `--model <model>`    | 嵌入模型 ID；默认本地 Ollama `nomic-embed-text`            |
-| `--base-url <url>`   | OpenAI-compatible 嵌入端点                                 |
-| `--config <file>`    | 配置文件路径，默认 `.ai-review.yml`                        |
+- 索引按下述配置的路径递归扫描并跳过常见生成目录：`rag.knowledgeBasePaths`。
+- 嵌入模型由 `AI_REVIEW_EMBEDDING_MODEL` 指定（默认本地 Ollama `nomic-embed-text`），端点由 `AI_REVIEW_EMBEDDING_BASE_URL` 指定（默认 `http://127.0.0.1:11434/v1`）。
+- 索引按块级内容哈希增量更新，重复重建不会重复处理未变化内容；重建期间审查跳过知识库检索。
+- 修改知识库路径后需要重新重建索引，旧索引不会自动迁移。
 
-默认端点为 `http://127.0.0.1:11434/v1`。执行索引前，请确保 Ollama 已启动并已准备对应 embedding 模型，或通过 `--base-url` 指向可用的 OpenAI-compatible embedding 服务：
-
-```bash
-pnpm exec ai-review index --paths docs/ CLAUDE.md src/
-```
-
-索引按块级内容哈希增量更新，重复执行不会重复处理未变化内容。
-
-### `ai-review server` —— 启动团队版服务
-
-| 选项               | 说明                                                  |
-| ------------------ | ----------------------------------------------------- |
-| `--port <port>`    | 监听端口，默认 `8080`                                 |
-| `--db <file>`      | SQLite 数据库路径，默认 `.ai-review-cache/reviews.db` |
-| `--web-dist <dir>` | Dashboard 静态产物目录；传入后由同一端口托管前端      |
-| `--config <file>`  | 配置文件路径，默认 `.ai-review.yml`                   |
-
-生产形态建议先构建前端，再运行：
-
-```bash
-pnpm --filter @ai-review/web build
-pnpm exec ai-review server --port 8080 --web-dist apps/web/dist
-```
+### 服务端启动参数
 
 #### 服务端环境变量
 
@@ -272,16 +274,18 @@ pnpm exec ai-review server --port 8080 --web-dist apps/web/dist
 
 Docker 镜像默认 `NODE_ENV=production`，会话 Cookie 自动启用 `Secure`；若在 http 反向代理后部署，请同时设置 `AI_REVIEW_COOKIE_SECURE=false` 并配合 `AI_REVIEW_TRUST_PROXY=true`。
 
-### `ai-review mcp` —— 对外开放工具
+### MCP 对外开放工具
 
-以 stdio MCP Server 暴露静态分析工具。客户端配置示例：
+静态分析工具经 MCP over Streamable HTTP 暴露，端点为 `POST /api/mcp`。
+需先在「系统配置 → 服务端」打开「启用 MCP 端点」，并使用后台签发的 Bearer 令牌。
 
 ```json
 {
   "mcpServers": {
     "ai-review-tools": {
-      "command": "ai-review",
-      "args": ["mcp"]
+      "type": "http",
+      "url": "http://localhost:8080/api/mcp",
+      "headers": { "Authorization": "Bearer <token>" }
     }
   }
 }
@@ -296,8 +300,8 @@ Docker 镜像默认 `NODE_ENV=production`，会话 Cookie 自动启用 `Secure`�
 
 ## 配置文件（`.ai-review.yml`）
 
-所有字段都可以省略，省略时使用 schema 默认值。`loadConfig` 会递归解析 `${ENV_NAME}`，配置校验失败会给出字段级错误，CLI 使用退出码 `2`。
-Web 发起审查时若未显式选择审查模式/阻断阈值，将回退使用 `review.mode`/`review.blockOn` 配置值（`POST /api/reviews` 同理）；重新执行（rerun）沿用原审查发起时的模式与阈值。示例：
+所有字段都可以省略，省略时使用 schema 默认值。`loadConfig` 会递归解析 `${ENV_NAME}`，配置校验失败会给出字段级错误（管理后台保存时即返回校验错误；Hook/CI 路径返回退出码 `2`）。
+发起审查时若未显式选择审查模式/阻断阈值，将回退使用 `review.mode`/`review.blockOn` 配置值；重新执行（rerun）沿用原审查发起时的范围、模式与阈值。示例：
 
 ```yaml
 llm:
@@ -313,6 +317,8 @@ review:
   dimensions: [correctness, security, performance, maintainability]
   blockOn: BLOCKER # BLOCKER | WARNING | NIT
   ignorePatterns: ['*.lock', 'pnpm-lock.yaml', 'dist/**', '*.min.js']
+  maxFiles: 200 # 单次审查纳入的文件数上限；超限按风险分降序截断并在报告中标注
+  maxChangedLines: 20000 # 单次审查纳入的变更行数上限（additions + deletions）
 
 rag:
   enabled: true
@@ -358,11 +364,13 @@ server:
   allowRegister: false       # 放开开放注册（缺省仅在无任何用户时允许首账号引导）
   trustProxy: false          # 反向代理部署时信任 X-Forwarded-For 识别真实 IP
   ollamaModel: qwen3-coder:30b  # Ollama 回退模型（云端不可用时的本地兜底）
+  hookTimeoutMs: 120000      # Hook/CI 同步审查超时；超时返回退出码 3（不阻断）
+  mcpEnabled: false          # 是否暴露 /api/mcp（MCP over Streamable HTTP）
 
 report:
-  format: markdown # markdown | html | json
+  format: markdown # markdown | html | json（导出默认格式）
   outputDir: .ai-review-reports
-  includePraise: true
+  includePraise: true # 是否在报告中保留 PRAISE 级发现
 ```
 
 LLM Provider 端点：
@@ -423,11 +431,13 @@ Ollama 的默认模型回退为 `qwen3-coder:30b`，可用 `AI_REVIEW_OLLAMA_MOD
 3. **配置管理**：读取并保存 `.ai-review.yml`；API Key 在页面中以 `********` 掩码显示，提交掩码值会保留原密钥；「服务端」卡片可配置原环境变量参数（仓库白名单/并发上限/安全开关等，保存后重启生效），并只读展示运行环境（端口、DB 路径、前端静态目录）。
 4. **自定义规则**：查看、新增、编辑、删除和启停自定义审查规则，并可粘贴示例 diff / 源码在线试跑验证正则命中。
 5. **知识库管理**：查看索引状态并异步触发 RAG 增量重建。
-6. **登录日志 / 操作日志**：分页查看认证事件与管理/审查写操作审计，支持日期范围、状态、动作与关键词筛选（仅持有对应权限的账号可见）。
+6. **Git Hook 与 CI**：选择仓库一键安装 pre-commit hook（服务端写盘）、管理 Bearer 令牌、查看脚本内容与 CI 示例。
+7. **静态分析工具**：在线粘贴 diff / 源码试跑密钥扫描与复杂度检查。
+8. **登录日志 / 操作日志**：分页查看认证事件与管理/审查写操作审计，支持日期范围、状态、动作与关键词筛选（仅持有对应权限的账号可见）。
 
 ## HTTP API
 
-所有非 `/api/auth/*` 的 `/api` 路由都需要有效登录会话；管理员路由额外需要 `admin` 角色。除特别说明外，响应形状由 `@ai-review/shared` 的 Zod schema 定义。
+所有非 `/api/auth/*`、`/api/hooks/*`、`/api/mcp` 的 `/api` 路由都需要有效登录会话；管理员路由额外需要对应页面权限（RBAC）。`/api/hooks/*` 与 `/api/mcp` 使用 `Authorization: Bearer <hook token>`。除特别说明外，响应形状由 `@ai-review/shared` 的 Zod schema 定义。
 
 ### 认证
 
@@ -443,14 +453,14 @@ Ollama 的默认模型回退为 `qwen3-coder:30b`，可用 `AI_REVIEW_OLLAMA_MOD
 
 | 路由                                                  | 方法   | 说明                                                 |
 | ----------------------------------------------------- | ------ | ---------------------------------------------------- |
-| `/api/reviews`                                        | POST   | 发起审查，返回 `202 + { reviewId }`；`mode`/`blockOn` 可选，未传时回退系统配置的 `review.mode`/`review.blockOn` |
+| `/api/reviews`                                        | POST   | 发起审查，返回 `202 + { reviewId }`；`target/base/commit` 定义审查范围，`mode`/`blockOn` 未传时回退系统配置 |
 | `/api/reviews`                                        | GET    | 审查历史列表；普通用户仅返回本人记录，支持查询和分页 |
 | `/api/reviews/:id`                                    | GET    | 五段式报告详情与行级 findings                        |
 | `/api/reviews/:id/diff`                               | GET    | 获取审查使用的 diff                                  |
 | `/api/reviews/:id/events`                             | GET    | 审查进度 SSE                                         |
 | `/api/reviews/:id/rerun`                              | POST   | 重新执行可访问的审查，返回 `202 + { reviewId }`      |
 | `/api/reviews/:id/cancel`                             | POST   | 取消正在运行的审查                                   |
-| `/api/reviews/:id/export?format=markdown\|html\|json` | GET    | 导出报告，默认 Markdown                              |
+| `/api/reviews/:id/export?format=markdown\|html\|json` | GET    | 导出报告；未指定 `format` 时使用 `report.format`      |
 | `/api/reviews/:id`                                    | DELETE | 删除可访问的审查记录                                 |
 | `/api/findings/:id`                                   | PATCH  | 更新误报标记，请求体 `{ "isFalsePositive": true }`   |
 | `/api/stats`                                          | GET    | 统计聚合；普通用户仅统计本人数据                     |
@@ -473,7 +483,28 @@ Ollama 的默认模型回退为 `qwen3-coder:30b`，可用 `AI_REVIEW_OLLAMA_MOD
 | `/api/admin/rules/test`               | POST   | 试跑规则：`{ rule, sampleDiffText?, sampleSource? }` 返回命中行 |
 | `/api/admin/login-logs`               | GET    | 登录日志（分页 + 日期/状态/动作/用户名筛选；权限 `/admin/login-logs`） |
 | `/api/admin/operation-logs`           | GET    | 操作日志（分页 + 日期/状态/动作/资源筛选；权限 `/admin/operation-logs`） |
+| `/api/admin/hooks/tokens`             | GET    | Hook / CI 令牌列表（不含明文；权限 `/admin/hook`） |
+| `/api/admin/hooks/tokens`             | POST   | 签发令牌，返回一次明文 `{ token, plainText }` |
+| `/api/admin/hooks/tokens/:id`         | DELETE | 吊销令牌 |
+| `/api/admin/hooks/script`             | GET    | 获取 hook 脚本内容（`shell` + `runner` 及相对路径） |
+| `/api/admin/hooks/install`            | POST   | 在仓库内写盘安装 hook 并落令牌文件 |
+| `/api/mcp`                            | POST   | MCP over Streamable HTTP（需 `server.mcpEnabled` + Bearer 令牌） |
 | `/metrics`                            | GET    | Prometheus 文本格式指标                       |
+
+### Hook / CI（Bearer 令牌）
+
+| 路由                  | 方法 | 说明 |
+| --------------------- | ---- | ---- |
+| `/api/hooks/review`   | POST | 同步执行一次审查，响应含 `exitCode`（0/1/2/3）；超时返回 3 且不阻断 |
+
+### 仓库发现
+
+| 路由                       | 方法 | 说明 |
+| -------------------------- | ---- | ---- |
+| `/api/repos`               | GET  | 允许根目录扫描结果 + 历史审查仓库 |
+| `/api/repos/status`        | GET  | 分支、HEAD、暂存/未暂存/未跟踪计数 |
+| `/api/repos/branches`      | GET  | 本地分支列表（按最近提交排序） |
+| `/api/repos/commits`       | GET  | 提交列表（`ref` 指定起点，默认 HEAD） |
 
 SSE 事件通过 `event` + JSON `data` 发送：
 
@@ -481,7 +512,7 @@ SSE 事件通过 `event` + JSON `data` 发送：
 | ------------ | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | `subscribed` | `reviewId`                                          | 客户端订阅成功                                                                                              |
 | `stage`      | `reviewId`, `stage`                                 | 流水线阶段开始：parse / riskPlan / correctness / security / performance / static / validate / heal / report |
-| `completed`  | `reviewId`, `riskScore`, `blockerCount`, `blocking` | 审查完成；`blocking` 与 CLI 退出码 1 语义一致                                                               |
+| `completed`  | `reviewId`, `riskScore`, `blockerCount`, `blocking` | 审查完成；`blocking` 与 Hook/CI 退出码 1 语义一致                                                           |
 | `failed`     | `reviewId`, `message`                               | 审查失败                                                                                                    |
 | `cancelled`  | `reviewId`                                          | 审查被取消                                                                                                  |
 
@@ -500,7 +531,7 @@ SSE 事件通过 `event` + JSON `data` 发送：
 ## 审查缓存与 RAG 索引
 
 - **审查缓存**：键包含 agent、prompt 版本和代码内容，与仓库路径无关；相同代码块可以跨审查、跨仓库复用。prompt 或输出契约变化时递增 `REVIEW_PROMPT_VERSION`，缓存自动失效。
-- **RAG 索引**：默认持久化到 `.ai-review-cache/vectors`，知识库路径由 `rag.knowledgeBasePaths` 指定。执行 `ai-review index` 后只重新向量化新增或变化的块。
+- **RAG 索引**：默认持久化到 `.ai-review-cache/vectors`，知识库路径由 `rag.knowledgeBasePaths` 指定。在后台「知识库」重建后只重新向量化新增或变化的块。
 - **运行时降级**：索引或模型服务不可用不会改变确定性静态分析的职责；报告会保留可用结果并标注受限阶段。
 
 ## 基准测试与测试策略
@@ -530,8 +561,8 @@ docker compose up --build
 ## CI/CD 集成
 
 - `.github/workflows/ci.yml`：push / PR 执行 lint、typecheck、build 和 test 全量门禁。
-- `.github/workflows/ai-review.yml`：PR 触发 `ai-review run --base origin/<base> --mode full --json`，将风险评分、BLOCKER 数和发现明细回帖到 PR。
-- 当审查发现达到阻断阈值时 CLI 返回退出码 1；工作流应将该结果作为审查结论处理，而不是误判为基础设施故障。
+- `.github/workflows/ai-review.yml`：PR 触发后启动服务并用 `POST /api/hooks/review`（`target: range`、`base: origin/<base>`、`mode: full`）执行同步审查，把风险评分、BLOCKER 数与退出码回帖到 PR。
+- 审查发现达到阻断阈值时响应 `exitCode` 为 1；工作流应把该结果作为审查结论处理，而不是误判为基础设施故障。`exitCode` 为 3 表示超时，工作流不应阻断。
 
 ## 开发指南
 
@@ -556,11 +587,12 @@ pnpm format      # Prettier --write（会修改文件）
 | 现象                                    | 处理方式                                                                                                    |
 | --------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | `Cannot find .../dist` 或服务启动即退出 | 先运行 `pnpm build`；`pnpm dev` 会自动按 Turbo 依赖图构建，但直接运行 server 不会                           |
-| 8080/5173 已被占用                      | 使用 `ai-review server --port <port>` 修改 API 端口；开发期 Vite 代理也要同步调整 `apps/web/vite.config.ts` |
+| 8080/5173 已被占用                      | 启动服务时用 `--port <port>` 修改 API 端口；开发期同步调整 `apps/web/vite.config.ts` 的代理目标            |
 | `better-sqlite3` 安装失败               | 使用 Node.js 22，并重新执行 `pnpm install`；Linux/alpine 构建需有 `python3`、`make`、`g++`                  |
 | 云端 provider 报 API Key 错误           | 确认 `AI_REVIEW_API_KEY` 已导出，且 `.ai-review.yml` 使用 `${AI_REVIEW_API_KEY}`；不要把 Key 写进仓库       |
 | 选择 Ollama 但连接失败                  | 启动 Ollama，确认默认 `http://127.0.0.1:11434/v1` 可访问，并准备模型；也可设置 `AI_REVIEW_OLLAMA_BASE_URL`  |
-| `ai-review index` 失败                  | 确认 embedding 服务可用、`--paths` 不为空，并检查 `--base-url` 与 embedding 模型是否匹配                    |
+| 知识库重建失败                          | 确认 embedding 服务可用、`rag.knowledgeBasePaths` 不为空，并检查 `AI_REVIEW_EMBEDDING_BASE_URL` 与模型是否匹配 |
+| Hook 提交时报「未找到令牌」             | 在后台「Git Hook 与 CI」重新安装；确认 `.ai-review-cache/hook-token` 存在且未被清理                        |
 | Dashboard 请求 401/403                  | 先登录；普通用户不能访问 `/api/admin/*` 或 `/metrics`，被禁用用户需要管理员恢复状态                         |
 | 前端打开但 API 请求失败                 | 开发环境确认 server 在 8080；生产环境使用 `--web-dist apps/web/dist`，不要把 Vite 开发代理配置当作生产代理  |
 | Docker 重建后数据看似丢失               | 确认使用 `docker compose up`，不要删除 `review-data` volume；检查 `/app/.ai-review-cache` 挂载状态          |

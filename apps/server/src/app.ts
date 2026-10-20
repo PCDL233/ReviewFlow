@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, realpathSync } from 'node:fs';
 import { resolve as resolvePath, sep } from 'node:path';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { compress } from 'hono/compress';
@@ -6,7 +6,7 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { zValidator } from '@hono/zod-validator';
 import { z } from 'zod';
-import type { SafeUser, ReviewStore, UserStore } from '@ai-review/db';
+import type { HookTokenStore, SafeUser, ReviewStore, UserStore } from '@ai-review/db';
 import { StoreError } from '@ai-review/db';
 import {
   AdminOverviewResponseSchema,
@@ -36,8 +36,24 @@ import {
   AiReviewConfigSchema,
   KnowledgeReindexResponseSchema,
   KnowledgeStatusResponseSchema,
+  StartReviewSchema,
+  RepoQuerySchema,
+  RepositoryListResponseSchema,
+  RepoStatusResponseSchema,
+  RepoBranchListResponseSchema,
+  RepoCommitListResponseSchema,
+  HookTokenListResponseSchema,
+  CreateHookTokenSchema,
+  CreateHookTokenResponseSchema,
+  HookScriptSchema,
+  InstallHookSchema,
+  InstallHookResponseSchema,
+  HookReviewRequestSchema,
+  HookReviewResponseSchema,
+  describeReviewSource,
+  EXIT_CODES,
 } from '@ai-review/shared';
-import type { ServerRuntime } from '@ai-review/shared';
+import type { ReviewSource, ServerRuntime } from '@ai-review/shared';
 import { renderHtml, renderJson, renderMarkdown } from '@ai-review/report';
 import { analyzeComplexity, compileCustomRulePattern, scanDiffTextForSecrets, testCustomRuleOnSamples } from '@ai-review/tools';
 import {
@@ -55,14 +71,11 @@ import { createRateLimiter, getClientIp } from './rate-limit.js';
 import { securityHeaders } from './security-headers.js';
 import { AuditService, createNoopAudit } from './audit.js';
 import type { ReviewService } from './review-service.js';
+import { RepoService, uniqueRepoPaths } from './repos.js';
+import { buildHookScripts, installHookFiles } from './hooks.js';
+import { handleMcpRequest } from './mcp.js';
 
-/** POST /api/reviews 入参（方案 2.3：API 入参经 zod 校验）。mode/blockOn 可选：
- * 未传时由服务端回退系统配置的 review.mode / review.blockOn（见处理器）。 */
-export const StartReviewSchema = z.object({
-  repoPath: z.string().min(1),
-  mode: z.enum(['fast', 'full']).optional(),
-  blockOn: z.enum(['BLOCKER', 'WARNING', 'NIT']).optional(),
-});
+/** POST /api/reviews 入参由 shared 的 StartReviewSchema 提供（含 target/base/commit） */
 
 /** PATCH /api/findings/:id 入参（Dashboard 误报标记回写） */
 export const FalsePositiveSchema = z.object({ isFalsePositive: z.boolean() });
@@ -95,6 +108,12 @@ export type AppDeps = {
   avatars?: AvatarStore;
   /** 审计日志服务（登录日志 + 操作日志）；未装配时静默跳过 */
   audit?: AuditService;
+  /** Hook / CI 令牌存储；未装配时 Hook 相关接口返回 503 */
+  hookTokens?: HookTokenStore;
+  /** Hook/CI 同步审查超时（毫秒）；缺省 120s */
+  hookTimeoutMs?: number;
+  /** 是否暴露 /api/mcp；缺省关闭 */
+  mcpEnabled?: boolean;
 };
 
 export type KnowledgeManager = {
@@ -153,26 +172,69 @@ class EventQueue<T> {
  * - POST /api/admin/rules/test 试跑自定义审查规则（admin）
  * - POST /api/admin/tools/secret-scan diff 密钥扫描（admin）
  * - POST /api/admin/tools/complexity 源码复杂度扫描（admin）
- * - GET  /api/admin/tools/hook-script 获取 pre-commit hook 脚本（admin）
+ * - GET  /api/admin/tools/complexity 源码复杂度扫描（admin）
+ * - GET  /api/admin/hooks/script  获取 hook 脚本（admin）
+ * - POST /api/admin/hooks/install 在仓库内安装 hook（admin）
+ * - POST /api/hooks/review        同步审查（Bearer 令牌，返回退出码）
+ * - GET  /api/repos               仓库发现（登录用户）
  * - GET  /metrics              Prometheus 指标（admin）
  */
 /**
  * 校验 repoPath 是否落在允许的根目录内（方案 3）：
  * 拒绝空路径、绝对路径逃逸到允许根之外的情况，防任意本地目录/文件读取。
+ * 存在路径先经 realpath 解析再比较——符号链接指向白名单之外时必须被拒绝，
+ * 否则 `allowedRoots` 可被一条指向 / 的软链绕过。
  */
 export function assertRepoPathAllowed(
   repoPath: string,
   roots: readonly string[] = [process.cwd()],
 ): void {
   if (repoPath === '') throw new Error('repoPath must not be empty');
-  const resolved = resolvePath(repoPath);
+  const resolved = canonicalize(resolvePath(repoPath));
   for (const root of roots) {
-    const rootResolved = resolvePath(root);
+    const rootResolved = canonicalize(resolvePath(root));
     // 目录边界：根目录本身或其子路径合法；根目录已以分隔符结尾（如 Windows 'D:/'→'D:\\'）时不重复追加
     const boundary = rootResolved.endsWith(sep) ? rootResolved : rootResolved + sep;
     if (resolved === rootResolved || resolved.startsWith(boundary)) return;
   }
   throw new Error('repoPath is outside the allowed workspace roots');
+}
+
+/** 解析符号链接；路径不存在（尚未创建/已删除）时退回原始路径，保证校验不因 ENOENT 放行 */
+function canonicalize(path: string): string {
+  try {
+    return realpathSync.native(path);
+  } catch {
+    return path;
+  }
+}
+
+/**
+ * 把扁平的请求体（target/base/commit）折算为判别式 ReviewSource。
+ * 参数缺失时给出可读错误而不是抛 zod 异常——旧客户端只传 repoPath 仍然可用。
+ * @param body POST /api/reviews 的请求体
+ * @returns 成功时带 source，失败时带人类可读的错误
+ */
+export function toReviewSource(body: {
+  target?: string | undefined;
+  base?: string | undefined;
+  commit?: string | undefined;
+}): { ok: true; source: ReviewSource } | { ok: false; error: string } {
+  const target = body.target ?? 'staged';
+  if (target === 'staged' || target === 'worktree') return { ok: true, source: { target } };
+  if (target === 'commit') {
+    if (body.commit === undefined || body.commit === '') {
+      return { ok: false, error: '审查单个提交时必须指定 commit' };
+    }
+    return { ok: true, source: { target: 'commit', commit: body.commit } };
+  }
+  if (target === 'range') {
+    if (body.base === undefined || body.base === '') {
+      return { ok: false, error: '审查提交区间时必须指定 base' };
+    }
+    return { ok: true, source: { target: 'range', base: body.base } };
+  }
+  return { ok: false, error: `不支持的审查目标：${target}` };
 }
 
 /**
@@ -262,9 +324,13 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   });
 
   // —— 数据隔离：除 auth 前缀外所有 /api 请求必须登录 ——
+  // /api/hooks/*（Hook/CI 同步审查）与 /api/mcp（MCP over HTTP）改用 Bearer 令牌，
+  // 它们由 git hook / CI / MCP 客户端调用，无法携带浏览器 Cookie。
   const requireAuth = createRequireAuth({ users: deps.users });
   app.use('/api/*', async (c, next) => {
     if (c.req.path.startsWith('/api/auth/')) return next();
+    if (c.req.path.startsWith('/api/hooks/')) return next();
+    if (c.req.path === '/api/mcp') return next();
     return requireAuth(c, next);
   });
 
@@ -330,29 +396,37 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   );
 
   app.post('/api/reviews', zValidator('json', StartReviewSchema), (c) => {
-    const { repoPath, mode: bodyMode, blockOn: bodyBlockOn } = c.req.valid('json');
+    const body = c.req.valid('json');
     const meta = requestMeta(c);
     const me = actor(c);
     // 未显式选择模式/阻断阈值时回退系统配置默认值（config.review.mode / blockOn），
     // 保证管理后台「默认审查模式/阻断阈值」对 web 发起的审查生效
     const liveConfig = readAdminConfig(deps.configPath ?? '.ai-review.yml');
-    const mode = bodyMode ?? liveConfig.review.mode;
-    const blockOn = bodyBlockOn ?? liveConfig.review.blockOn;
+    const mode = body.mode ?? liveConfig.review.mode;
+    const blockOn = body.blockOn ?? liveConfig.review.blockOn;
+    // 审查来源：旧客户端不带 target 时按 staged 处理（保持既有语义）
+    const sourceResult = toReviewSource(body);
+    if (!sourceResult.ok) {
+      audit.operation({ ...me, ...meta, action: 'start_review', resource: 'review', detail: JSON.stringify({ repoPath: body.repoPath, mode }), status: 'failed', reason: 'invalid-target' });
+      return c.json({ error: sourceResult.error }, 400);
+    }
     // 方案 3：仅允许审查落在白名单根目录内的仓库，防任意本地路径读取
     try {
-      assertRepoPathAllowed(repoPath, deps.allowedRoots ?? [process.cwd()]);
+      assertRepoPathAllowed(body.repoPath, deps.allowedRoots ?? [process.cwd()]);
     } catch {
-      audit.operation({ ...me, ...meta, action: 'start_review', resource: 'review', detail: JSON.stringify({ repoPath, mode }), status: 'failed', reason: 'path-not-allowed' });
+      audit.operation({ ...me, ...meta, action: 'start_review', resource: 'review', detail: JSON.stringify({ repoPath: body.repoPath, mode }), status: 'failed', reason: 'path-not-allowed' });
       return c.json({ error: '仓库路径不在允许的目录白名单内' }, 400);
     }
     const createdBy = c.get('user').id;
     const reviewId = deps.service.startReview({
-      repoPath,
+      repoPath: body.repoPath,
       mode,
       createdBy,
       blockOn,
+      source: sourceResult.source,
+      includePraise: liveConfig.report.includePraise,
     });
-    audit.operation({ ...me, ...meta, action: 'start_review', resource: 'review', resourceId: reviewId, detail: JSON.stringify({ repoPath, mode }), status: 'success' });
+    audit.operation({ ...me, ...meta, action: 'start_review', resource: 'review', resourceId: reviewId, detail: JSON.stringify({ repoPath: body.repoPath, mode, source: describeReviewSource(sourceResult.source) }), status: 'success' });
     return c.json({ reviewId }, 202);
   });
 
@@ -438,7 +512,10 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     const reviewId = c.req.param('id');
     if (!canAccessReview(deps, current, reviewId))
       return c.json({ error: '审查记录不存在' }, 404);
-    const format = c.req.query('format') ?? 'markdown';
+    const requested = c.req.query('format');
+    // 未显式指定时使用配置的 report.format（此前该配置项从未被消费）
+    const format =
+      requested ?? readAdminConfig(deps.configPath ?? '.ai-review.yml').report.format;
     if (format !== 'markdown' && format !== 'json' && format !== 'html')
       return c.json({ error: '导出格式仅支持 markdown / html / json' }, 400);
     try {
@@ -675,16 +752,6 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       return c.json({ functions: analyzeComplexity(source, threshold) });
     },
   );
-
-  app.get('/api/admin/tools/hook-script', requirePermission('/admin/hook'), (c) => {
-    const script = [
-      '# ai-review pre-commit hook (husky v9, Windows/macOS/Linux universal)',
-      '# fast mode target <= 15s; BLOCKER findings block the commit',
-      'ai-review run --staged --mode fast --block-on BLOCKER',
-      '',
-    ].join('\n');
-    return c.text(script);
-  });
 
   app.get('/api/admin/knowledge', requirePermission('/admin/knowledge'), async (c) => {
     const status =
@@ -948,6 +1015,271 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
         },
       }),
     );
+  });
+
+  // —— 仓库发现（Web 发起审查的仓库/分支/提交选择器数据源）——
+  // 所有查询都以 allowedRoots 为界：先做路径白名单校验，再交给 RepoService 只读访问
+  const repoService = new RepoService();
+  const allowedRoots = (): readonly string[] => deps.allowedRoots ?? [process.cwd()];
+
+  app.get('/api/repos', requirePermission('/run'), (c) => {
+    const reviewed = uniqueRepoPaths(deps.store.listRepoPaths(200));
+    return c.json(
+      RepositoryListResponseSchema.parse({
+        repositories: repoService.list(allowedRoots(), reviewed),
+      }),
+    );
+  });
+
+  /** 三个仓库子资源共用的前置校验：解析 query 并校验路径白名单 */
+  const validateRepoQuery = (
+    c: import('hono').Context,
+  ): { repoPath: string; query: ReturnType<typeof RepoQuerySchema.parse> } | Response => {
+    const query = RepoQuerySchema.safeParse(c.req.query());
+    if (!query.success) return c.json({ error: '仓库路径无效' }, 400);
+    try {
+      assertRepoPathAllowed(query.data.repoPath, allowedRoots());
+    } catch {
+      return c.json({ error: '仓库路径不在允许的目录白名单内' }, 400);
+    }
+    return { repoPath: query.data.repoPath, query: query.data };
+  };
+
+  app.get('/api/repos/status', async (c) => {
+    const parsed = validateRepoQuery(c);
+    if (parsed instanceof Response) return parsed;
+    try {
+      const status = await repoService.status(parsed.repoPath);
+      return c.json(RepoStatusResponseSchema.parse({ status }));
+    } catch {
+      return c.json({ error: '无法读取仓库状态' }, 400);
+    }
+  });
+
+  app.get('/api/repos/branches', async (c) => {
+    const parsed = validateRepoQuery(c);
+    if (parsed instanceof Response) return parsed;
+    try {
+      const branches = await repoService.branches(parsed.repoPath, parsed.query.limit);
+      return c.json(RepoBranchListResponseSchema.parse({ branches }));
+    } catch {
+      return c.json({ error: '无法读取分支列表' }, 400);
+    }
+  });
+
+  app.get('/api/repos/commits', async (c) => {
+    const parsed = validateRepoQuery(c);
+    if (parsed instanceof Response) return parsed;
+    try {
+      const commits = await repoService.commits(
+        parsed.repoPath,
+        parsed.query.limit,
+        parsed.query.ref ?? 'HEAD',
+      );
+      return c.json(RepoCommitListResponseSchema.parse({ commits }));
+    } catch {
+      return c.json({ error: '无法读取提交列表' }, 400);
+    }
+  });
+
+  // —— Hook / CI 令牌（Web 一键安装 Hook 的凭据管理）——
+  app.get('/api/admin/hooks/tokens', requirePermission('/admin/hook'), (c) => {
+    if (deps.hookTokens === undefined) return c.json({ error: 'Hook 令牌服务未配置' }, 503);
+    return c.json(HookTokenListResponseSchema.parse({ tokens: deps.hookTokens.list() }));
+  });
+
+  app.post(
+    '/api/admin/hooks/tokens',
+    requirePermission('/admin/hook'),
+    zValidator('json', CreateHookTokenSchema),
+    (c) => {
+      if (deps.hookTokens === undefined) return c.json({ error: 'Hook 令牌服务未配置' }, 503);
+      const { label, expiresInDays } = c.req.valid('json');
+      const created = deps.hookTokens.create({
+        label,
+        expiresInDays,
+        createdBy: c.get('user').id,
+      });
+      audit.operation({ ...actor(c), ...requestMeta(c), action: 'rotate_hook_token', resource: 'hook', resourceId: created.token.id, detail: JSON.stringify({ label }), status: 'success' });
+      return c.json(
+        CreateHookTokenResponseSchema.parse({ token: created.token, plainText: created.plainText }),
+        201,
+      );
+    },
+  );
+
+  app.delete('/api/admin/hooks/tokens/:id', requirePermission('/admin/hook'), (c) => {
+    if (deps.hookTokens === undefined) return c.json({ error: 'Hook 令牌服务未配置' }, 503);
+    const revoked = deps.hookTokens.revoke(c.req.param('id'));
+    audit.operation({ ...actor(c), ...requestMeta(c), action: 'revoke_hook_token', resource: 'hook', resourceId: c.req.param('id'), status: revoked ? 'success' : 'failed', ...(revoked ? {} : { reason: 'not-found' }) });
+    return c.json({ revoked });
+  });
+
+  app.get('/api/admin/hooks/script', requirePermission('/admin/hook'), (c) => {
+    const config = readAdminConfig(deps.configPath ?? '.ai-review.yml');
+    const origin = c.req.header('origin') ?? `http://localhost:${deps.runtime?.port ?? 8080}`;
+    return c.json(
+      HookScriptSchema.parse(
+        buildHookScripts(c.req.query('serverUrl') ?? origin, {
+          target: 'staged',
+          mode: 'fast',
+          blockOn: config.review.blockOn,
+        }),
+      ),
+    );
+  });
+
+  app.post(
+    '/api/admin/hooks/install',
+    requirePermission('/admin/hook'),
+    zValidator('json', InstallHookSchema),
+    (c) => {
+      const body = c.req.valid('json');
+      const meta = requestMeta(c);
+      const me = actor(c);
+      try {
+        assertRepoPathAllowed(body.repoPath, allowedRoots());
+      } catch {
+        audit.operation({ ...me, ...meta, action: 'install_hook', resource: 'hook', status: 'failed', reason: 'path-not-allowed' });
+        return c.json({ error: '仓库路径不在允许的目录白名单内' }, 400);
+      }
+      if (deps.hookTokens === undefined) {
+        return c.json({ error: 'Hook 令牌服务未配置' }, 503);
+      }
+      const config = readAdminConfig(deps.configPath ?? '.ai-review.yml');
+      const origin = body.serverUrl ?? c.req.header('origin') ?? `http://localhost:${deps.runtime?.port ?? 8080}`;
+      const scripts = buildHookScripts(origin, {
+        target: 'staged',
+        mode: 'fast',
+        blockOn: config.review.blockOn,
+      });
+
+      let plainText: string | null = null;
+      if (body.tokenLabel !== undefined) {
+        const created = deps.hookTokens.create({
+          label: body.tokenLabel,
+          expiresInDays: 90,
+          createdBy: c.get('user').id,
+        });
+        plainText = created.plainText;
+      }
+
+      try {
+        const result = installHookFiles({
+          repoPath: body.repoPath,
+          scripts,
+          plainText,
+          overwrite: body.overwrite,
+        });
+        audit.operation({ ...me, ...meta, action: 'install_hook', resource: 'hook', resourceId: body.repoPath, detail: JSON.stringify({ files: result.files.length, skipped: result.skipped.length }), status: 'success' });
+        return c.json(
+          InstallHookResponseSchema.parse({
+            installed: result.files.length > 0,
+            files: result.files,
+            plainText,
+            skipped: result.skipped,
+          }),
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Hook 安装失败';
+        audit.operation({ ...me, ...meta, action: 'install_hook', resource: 'hook', resourceId: body.repoPath, status: 'failed', reason: 'io' });
+        return c.json({ error: message }, 400);
+      }
+    },
+  );
+
+  // —— Hook / CI 同步审查（Bearer 令牌鉴权，返回退出码契约 0/1/2/3）——
+  app.post('/api/hooks/review', zValidator('json', HookReviewRequestSchema), async (c) => {
+    const startedAt = Date.now();
+    if (deps.hookTokens === undefined) return c.json({ error: 'Hook 令牌服务未配置' }, 503);
+    const header = c.req.header('authorization') ?? '';
+    const plainText = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
+    const hookToken = deps.hookTokens.verify(plainText);
+    if (hookToken === undefined) {
+      return c.json({ error: '令牌无效或已过期，请在管理后台重新安装 Hook' }, 401);
+    }
+
+    const body = c.req.valid('json');
+    const meta = requestMeta(c);
+    try {
+      assertRepoPathAllowed(body.repoPath, allowedRoots());
+    } catch {
+      return c.json({ error: '仓库路径不在允许的目录白名单内' }, 400);
+    }
+    const sourceResult = toReviewSource(body);
+    if (!sourceResult.ok) return c.json({ error: sourceResult.error }, 400);
+
+    const config = readAdminConfig(deps.configPath ?? '.ai-review.yml');
+    const reviewId = deps.service.startReview({
+      repoPath: body.repoPath,
+      mode: body.mode ?? config.review.mode,
+      blockOn: body.blockOn ?? config.review.blockOn,
+      source: sourceResult.source,
+      includePraise: config.report.includePraise,
+      ...(hookToken.createdBy === null ? {} : { createdBy: hookToken.createdBy }),
+    });
+    const timeoutMs = deps.hookTimeoutMs ?? 120_000;
+    const terminal = await deps.service.waitForTerminal(reviewId, timeoutMs);
+
+    if (terminal === null) {
+      deps.service.cancelReview(reviewId);
+      audit.operation({ userId: hookToken.createdBy ?? '', username: `hook:${hookToken.label}`, ...meta, action: 'run_hook_review', resource: 'review', resourceId: reviewId, detail: JSON.stringify({ source: describeReviewSource(sourceResult.source) }), status: 'failed', reason: 'timeout' });
+      return c.json(
+        HookReviewResponseSchema.parse({
+          reviewId,
+          status: 'cancelled',
+          blocking: false,
+          riskScore: 0,
+          blockerCount: 0,
+          summary: `ai-review: 审查超时（${Math.round(timeoutMs / 1000)}s），已跳过本次阻断判定。`,
+          exitCode: EXIT_CODES.cancelled,
+        }),
+      );
+    }
+
+    if (terminal.type === 'completed') {
+      audit.operation({ userId: hookToken.createdBy ?? '', username: `hook:${hookToken.label}`, ...meta, action: 'run_hook_review', resource: 'review', resourceId: reviewId, detail: JSON.stringify({ source: describeReviewSource(sourceResult.source), blocking: terminal.blocking }), status: 'success' });
+      return c.json(
+        HookReviewResponseSchema.parse({
+          reviewId,
+          status: 'completed',
+          blocking: terminal.blocking,
+          riskScore: terminal.riskScore,
+          blockerCount: terminal.blockerCount,
+          summary: terminal.blocking
+            ? `ai-review: 发现 BLOCKER × ${terminal.blockerCount}（风险 ${terminal.riskScore}/100），已阻断本次提交。`
+            : `ai-review: 未发现达到阻断阈值的问题（风险 ${terminal.riskScore}/100）。`,
+          exitCode: terminal.blocking ? EXIT_CODES.blocked : EXIT_CODES.ok,
+        }),
+      );
+    }
+
+    const failed = terminal.type === 'failed';
+    audit.operation({ userId: hookToken.createdBy ?? '', username: `hook:${hookToken.label}`, ...meta, action: 'run_hook_review', resource: 'review', resourceId: reviewId, status: 'failed', reason: terminal.type });
+    return c.json(
+      HookReviewResponseSchema.parse({
+        reviewId,
+        status: failed ? 'failed' : 'cancelled',
+        blocking: false,
+        riskScore: 0,
+        blockerCount: 0,
+        summary: failed
+          ? `ai-review: 审查执行失败（${Math.round((Date.now() - startedAt) / 1000)}s）。`
+          : 'ai-review: 审查已取消。',
+        exitCode: failed ? EXIT_CODES.configError : EXIT_CODES.cancelled,
+      }),
+    );
+  });
+
+  // —— MCP over Streamable HTTP（替代 stdio 形态；默认关闭）——
+  app.all('/api/mcp', async (c) => {
+    if (deps.mcpEnabled !== true) return c.json({ error: 'MCP 端点未启用' }, 404);
+    const header = c.req.header('authorization') ?? '';
+    const plainText = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : '';
+    if (deps.hookTokens?.verify(plainText) === undefined) {
+      return c.json({ error: '令牌无效或已过期' }, 401);
+    }
+    return handleMcpRequest(c.req.raw);
   });
 
   // 统一错误响应（方案 4）：完整异常仅记录到服务端日志，向调用方返回泛化信息，避免泄露内部路径/细节

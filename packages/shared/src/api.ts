@@ -3,6 +3,8 @@ import { FindingSchema } from './finding.js';
 import { AiReviewConfigSchema, CustomRuleSchema } from './config-schema.js';
 import { ReviewReportSchema } from './report.js';
 import { CUSTOM_RULE_MATCH_SCOPES } from './config-schema.js';
+import { GitRefSchema, REVIEW_TARGETS } from './review-source.js';
+import { EXIT_CODES } from './exit-codes.js';
 
 // 认证/用户契约无 node 依赖，随 api 子路径一并供浏览器端消费
 export * from './auth.js';
@@ -11,6 +13,19 @@ export type { Finding } from './finding.js';
 // 自定义规则 schema 与匹配范围枚举：供管理后台规则表单与试跑面板消费
 export { CustomRuleSchema, CUSTOM_RULE_MATCH_SCOPES } from './config-schema.js';
 export type { CustomRule, CustomRuleMatchScope } from './config-schema.js';
+// 审查目标：Web 发起审查、Hook/CI 同步审查共用同一枚举与标签
+export {
+  REVIEW_TARGETS,
+  REVIEW_TARGET_LABELS,
+  ReviewSourceSchema,
+  GitRefSchema,
+  normalizeReviewSource,
+  describeReviewSource,
+} from './review-source.js';
+export type { ReviewSource, ReviewTarget } from './review-source.js';
+// 退出码：Hook/CI 同步审查响应的 exitCode 字段与调用方脚本共用同一契约
+export { EXIT_CODES } from './exit-codes.js';
+export type { ExitCode } from './exit-codes.js';
 // 模型服务商目录同样无 node 依赖，供管理后台页面经浏览器安全子路径导入
 export * from './model-catalog.js';
 
@@ -30,6 +45,12 @@ export const ReviewListItemSchema = z.object({
   reviewId: z.string(),
   repoPath: z.string(),
   branch: z.string(),
+  /** 被审查提交（staged/worktree 目标取 HEAD，range 取 head 端）；旧记录为 null */
+  commitHash: z.string().nullable().optional(),
+  /** 审查目标（staged/worktree/commit/range）；旧记录缺省视为 staged */
+  target: z.enum(REVIEW_TARGETS).optional(),
+  /** 审查来源的可读描述（如 range:main...HEAD） */
+  sourceLabel: z.string().optional(),
   model: z.string(),
   mode: z.enum(['fast', 'full']),
   status: z.enum(['completed', 'failed', 'cancelled']).default('completed'),
@@ -312,6 +333,10 @@ export const OPERATION_LOG_ACTIONS = [
   'save_rules',
   'test_rules',
   'reindex_knowledge',
+  'install_hook',
+  'rotate_hook_token',
+  'revoke_hook_token',
+  'run_hook_review',
 ] as const;
 export type OperationLogAction = (typeof OPERATION_LOG_ACTIONS)[number];
 
@@ -381,3 +406,189 @@ export const OperationLogListResponseSchema = z.object({
   pageSize: z.number().int().positive(),
 });
 export type OperationLogListResponse = z.infer<typeof OperationLogListResponseSchema>;
+
+/** —— 发起审查（Web）—— */
+
+/**
+ * POST /api/reviews 入参。
+ * target/base/commit 描述审查范围；三者与 target 的匹配关系由 ReviewSourceSchema 保证。
+ * 兼容旧客户端：不带 target 时按 staged 处理（与既有"审查暂存区"语义一致）。
+ */
+export const StartReviewSchema = z.object({
+  repoPath: z.string().min(1),
+  mode: z.enum(['fast', 'full']).optional(),
+  blockOn: z.enum(['BLOCKER', 'WARNING', 'NIT']).optional(),
+  target: z.enum(REVIEW_TARGETS).optional(),
+  /** target=range 时的基线引用 */
+  base: GitRefSchema.optional(),
+  /** target=commit 时的提交引用 */
+  commit: GitRefSchema.optional(),
+});
+export type StartReviewInput = z.infer<typeof StartReviewSchema>;
+
+/** —— 仓库发现（Web 发起审查的仓库/分支/提交选择器数据源）—— */
+
+/** 仓库条目：来自允许根目录扫描与历史审查记录去重合并 */
+export const RepositorySchema = z.object({
+  /** 绝对路径；直接作为 POST /api/reviews 的 repoPath */
+  path: z.string(),
+  /** 展示名（目录名） */
+  name: z.string(),
+  /** 是否为 git 工作区（非 git 目录仍可展示，但发起审查会失败） */
+  isGitRepo: z.boolean(),
+  /** 是否来自历史审查记录（用于排序与标记） */
+  reviewed: z.boolean(),
+});
+export type Repository = z.infer<typeof RepositorySchema>;
+
+export const RepositoryListResponseSchema = z.object({ repositories: z.array(RepositorySchema) });
+export type RepositoryListResponse = z.infer<typeof RepositoryListResponseSchema>;
+
+/** 仓库工作区状态（发起审查前的即时校验依据） */
+export const RepoStatusSchema = z.object({
+  path: z.string(),
+  isGitRepo: z.boolean(),
+  branch: z.string(),
+  headCommit: z.string().nullable(),
+  headMessage: z.string().nullable(),
+  stagedFiles: z.number().int().nonnegative(),
+  unstagedFiles: z.number().int().nonnegative(),
+  untrackedFiles: z.number().int().nonnegative(),
+});
+export type RepoStatus = z.infer<typeof RepoStatusSchema>;
+export const RepoStatusResponseSchema = z.object({ status: RepoStatusSchema });
+
+/** 分支条目 */
+export const RepoBranchSchema = z.object({
+  name: z.string(),
+  /** 是否为当前分支 */
+  current: z.boolean(),
+  /** 最近一次提交的短哈希 */
+  commit: z.string().nullable(),
+});
+export type RepoBranch = z.infer<typeof RepoBranchSchema>;
+export const RepoBranchListResponseSchema = z.object({ branches: z.array(RepoBranchSchema) });
+
+/** 提交条目（单个提交审查与区间 base 选择器共用） */
+export const RepoCommitSchema = z.object({
+  hash: z.string(),
+  shortHash: z.string(),
+  subject: z.string(),
+  author: z.string(),
+  date: z.string(),
+});
+export type RepoCommit = z.infer<typeof RepoCommitSchema>;
+export const RepoCommitListResponseSchema = z.object({ commits: z.array(RepoCommitSchema) });
+
+/** GET /api/repos/* 的公共查询：repoPath 必须落在服务端允许根目录内 */
+export const RepoQuerySchema = z.object({
+  repoPath: z.string().min(1),
+  /** 提交/分支列表上限 */
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  /** 提交列表的起点引用（默认 HEAD） */
+  ref: GitRefSchema.optional(),
+});
+export type RepoQuery = z.infer<typeof RepoQuerySchema>;
+
+/** —— Git Hook 令牌（Web 一键安装 Hook 与 CI 同步审查的凭据）—— */
+
+/** 令牌行（永不返回 token 明文，除签发响应） */
+export const HookTokenSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  /** 令牌前 8 位，供管理员辨认（明文只在签发时返回一次） */
+  prefix: z.string(),
+  createdBy: z.string().nullable(),
+  createdAt: z.string(),
+  /** 最后使用时间；从未使用为 null */
+  lastUsedAt: z.string().nullable(),
+  revokedAt: z.string().nullable(),
+});
+export type HookToken = z.infer<typeof HookTokenSchema>;
+
+export const HookTokenListResponseSchema = z.object({ tokens: z.array(HookTokenSchema) });
+
+/** POST /api/admin/hooks/tokens 入参 */
+export const CreateHookTokenSchema = z.object({
+  label: z.string().trim().min(1).max(64).default('hook'),
+  /** 有效期（天）；缺省 90 天 */
+  expiresInDays: z.number().int().min(1).max(3650).default(90),
+});
+export type CreateHookTokenInput = z.infer<typeof CreateHookTokenSchema>;
+
+/** POST /api/admin/hooks/tokens 响应：明文 token 仅此一次返回 */
+export const CreateHookTokenResponseSchema = z.object({
+  token: HookTokenSchema,
+  plainText: z.string(),
+});
+
+/** GET /api/admin/hooks/script：安装所需的两份文件内容 */
+export const HookScriptSchema = z.object({
+  /** husky v9 的 sh 入口，内容只调用 node 运行 .mjs */
+  shell: z.string(),
+  /** 真正的审查调用脚本（Node ESM，跨平台） */
+  runner: z.string(),
+  /** 两份文件的相对路径（相对仓库根） */
+  paths: z.object({ shell: z.string(), runner: z.string() }),
+});
+export type HookScript = z.infer<typeof HookScriptSchema>;
+
+/** POST /api/admin/hooks/install 入参 */
+export const InstallHookSchema = z.object({
+  repoPath: z.string().min(1),
+  /** 服务端基地址（写入脚本的 AI_REVIEW_SERVER_URL 默认值）；缺省用请求 Origin */
+  serverUrl: z.string().trim().min(1).optional(),
+  /** 安装时自动签发的令牌标签；未提供时不注入令牌（使用已存在的 token 文件） */
+  tokenLabel: z.string().trim().min(1).max(64).optional(),
+  /** 是否覆盖已存在的 hook */
+  overwrite: z.boolean().default(false),
+});
+export type InstallHookInput = z.infer<typeof InstallHookSchema>;
+
+/** POST /api/admin/hooks/install 响应 */
+export const InstallHookResponseSchema = z.object({
+  installed: z.boolean(),
+  /** 实际写入的绝对路径 */
+  files: z.array(z.string()),
+  /** 本次签发的令牌明文（未签发时为 null） */
+  plainText: z.string().nullable(),
+  /** 已存在时跳过的提示 */
+  skipped: z.array(z.string()),
+});
+export type InstallHookResponse = z.infer<typeof InstallHookResponseSchema>;
+
+/** —— Hook / CI 同步审查（令牌鉴权，返回退出码契约）—— */
+
+/**
+ * POST /api/hooks/review 入参：Hook 与 CI 共用。
+ * 与 /api/reviews 的区别是**同步**执行并返回 exitCode——调用方脚本据此决定是否放行提交。
+ */
+export const HookReviewRequestSchema = z.object({
+  repoPath: z.string().min(1),
+  target: z.enum(REVIEW_TARGETS).default('staged'),
+  base: GitRefSchema.optional(),
+  commit: GitRefSchema.optional(),
+  mode: z.enum(['fast', 'full']).optional(),
+  blockOn: z.enum(['BLOCKER', 'WARNING', 'NIT']).optional(),
+});
+export type HookReviewRequest = z.infer<typeof HookReviewRequestSchema>;
+
+/** POST /api/hooks/review 响应：exitCode 沿用 packages/shared 的 0/1/2/3 契约 */
+export const HookReviewResponseSchema = z.object({
+  reviewId: z.string(),
+  status: z.enum(['completed', 'failed', 'cancelled']),
+  /** 是否达到阻断阈值（等价 exitCode === 1） */
+  blocking: z.boolean(),
+  riskScore: z.number(),
+  blockerCount: z.number().int().nonnegative(),
+  /** 发现摘要，供终端直接打印 */
+  summary: z.string(),
+  /** 0 通过 / 1 阻断 / 2 配置环境错误 / 3 超时取消 */
+  exitCode: z.union([
+    z.literal(EXIT_CODES.ok),
+    z.literal(EXIT_CODES.blocked),
+    z.literal(EXIT_CODES.configError),
+    z.literal(EXIT_CODES.cancelled),
+  ]),
+});
+export type HookReviewResponse = z.infer<typeof HookReviewResponseSchema>;

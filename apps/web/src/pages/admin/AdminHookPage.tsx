@@ -1,42 +1,114 @@
+import { useState } from 'react';
 import type { ReactElement } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
   App as AntdApp,
+  AutoComplete,
   Button,
   Card,
   Col,
+  Descriptions,
+  Input,
+  Popconfirm,
   Row,
   Skeleton,
   Space,
-  Steps,
+  Switch,
+  Table,
+  Tabs,
+  Tag,
   Tooltip,
   Typography,
 } from 'antd';
-import { CopyOutlined, DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
-import { fetchHookScript } from '../../api';
+import type { ColumnsType } from 'antd/es/table';
+import {
+  CopyOutlined,
+  DownloadOutlined,
+  KeyOutlined,
+  ReloadOutlined,
+  SafetyCertificateOutlined,
+} from '@ant-design/icons';
+import type { HookToken } from '@ai-review/shared/api';
+import {
+  createHookToken,
+  fetchHookScript,
+  fetchHookTokens,
+  fetchRepositories,
+  installHook,
+  revokeHookToken,
+} from '../../api';
 import { CardHeading, PageHeader } from '../../components/PageHeader';
 import { ErrorAlert } from '../../components/ErrorAlert';
+import { EmptyState } from '../../components/EmptyState';
 import { CodeBlock } from '../../components/CodeBlock';
+import { useNotify } from '../../hooks/use-notify';
+import { formatDateTime } from '../../format';
 
-const MANUAL_COMMAND = [
-  'mkdir -p .husky',
-  "cat > .husky/pre-commit <<'EOF'",
-  '#!/bin/sh',
-  'pnpm exec ai-review run --mode fast',
-  'EOF',
-  'chmod +x .husky/pre-commit',
+/** CI 工作流片段：与 pre-commit 共用同一个同步端点与退出码契约 */
+const CI_SNIPPET = [
+  '- name: AI Review',
+  '  run: |',
+  '    set +e',
+  '    curl -sS -X POST "$AI_REVIEW_SERVER/api/hooks/review" \\',
+  '      -H "authorization: Bearer $AI_REVIEW_TOKEN" \\',
+  '      -H "content-type: application/json" \\',
+  '      -d "{\\"repoPath\\":\\"$PWD\\",\\"target\\":\\"range\\",\\"base\\":\\"origin/main\\",\\"mode\\":\\"full\\"}" \\',
+  '      -o review.json',
+  '    exit_code=$(node -p "require(\'./review.json\').exitCode")',
+  '    cat review.json',
+  '    exit $exit_code',
 ].join('\n');
 
-/** Git Hook 安装：自动安装命令、手动方式与脚本下载。 */
+/**
+ * Git Hook 与 CI：一键把审查 hook 安装到仓库，并管理调用凭据。
+ * 与旧版的差别：这里真实写盘（服务端安装），不再让用户复制命令回终端执行。
+ */
 export function AdminHookPage(): ReactElement {
   const { message } = AntdApp.useApp();
-  const scriptQuery = useQuery({
-    queryKey: ['admin', 'hook-script'],
-    queryFn: fetchHookScript,
+  const queryClient = useQueryClient();
+  const { notifyError } = useNotify();
+  const [repoPath, setRepoPath] = useState('');
+  const [tokenLabel, setTokenLabel] = useState('pre-commit');
+  const [overwrite, setOverwrite] = useState(false);
+  const [plainText, setPlainText] = useState<string | null>(null);
+
+  const reposQuery = useQuery({ queryKey: ['repos'], queryFn: fetchRepositories });
+  const scriptQuery = useQuery({ queryKey: ['hook-script'], queryFn: () => fetchHookScript() });
+  const tokensQuery = useQuery({ queryKey: ['hook-tokens'], queryFn: fetchHookTokens });
+
+  const installMutation = useMutation({
+    mutationFn: () => installHook({ repoPath, tokenLabel, overwrite }),
+    onSuccess: (result) => {
+      setPlainText(result.plainText);
+      void queryClient.invalidateQueries({ queryKey: ['hook-tokens'] });
+      if (result.skipped.length > 0 && !overwrite) {
+        void message.warning('已存在同名文件，未覆盖。如需重装请打开「覆盖已有 Hook」。');
+        return;
+      }
+      void message.success(`已写入 ${result.files.length} 个文件`);
+    },
+    onError: (e) => notifyError(e, { title: '安装 Hook 失败' }),
   });
 
-  const script = scriptQuery.data;
+  const tokenMutation = useMutation({
+    mutationFn: () => createHookToken(tokenLabel, 90),
+    onSuccess: (result) => {
+      setPlainText(result.plainText);
+      void queryClient.invalidateQueries({ queryKey: ['hook-tokens'] });
+      void message.success('已签发令牌，明文仅显示一次，请立即保存');
+    },
+    onError: (e) => notifyError(e, { title: '签发令牌失败' }),
+  });
+
+  const revokeMutation = useMutation({
+    mutationFn: (id: string) => revokeHookToken(id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['hook-tokens'] });
+      void message.success('令牌已吊销');
+    },
+    onError: (e) => notifyError(e, { title: '吊销令牌失败' }),
+  });
 
   const copy = async (text: string, label: string): Promise<void> => {
     try {
@@ -47,114 +119,201 @@ export function AdminHookPage(): ReactElement {
     }
   };
 
-  const download = (): void => {
-    if (script === undefined) return;
-    const blob = new Blob([script], { type: 'text/x-shellscript;charset=utf-8' });
+  const download = (content: string, filename: string): void => {
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = 'pre-commit';
+    anchor.download = filename;
     anchor.click();
     URL.revokeObjectURL(url);
-    void message.success('pre-commit 脚本已下载');
+    void message.success(`${filename} 已下载`);
   };
+
+  const tokenColumns: ColumnsType<HookToken> = [
+    { title: '标签', dataIndex: 'label', width: 160 },
+    {
+      title: '令牌前缀',
+      dataIndex: 'prefix',
+      width: 150,
+      render: (prefix: string) => <Typography.Text code>{prefix}…</Typography.Text>,
+    },
+    {
+      title: '创建时间',
+      dataIndex: 'createdAt',
+      width: 180,
+      render: (value: string) => formatDateTime(value),
+    },
+    {
+      title: '最后使用',
+      dataIndex: 'lastUsedAt',
+      width: 180,
+      render: (value: string | null) =>
+        value === null ? <span className="table-muted">从未使用</span> : formatDateTime(value),
+    },
+    {
+      title: '状态',
+      dataIndex: 'revokedAt',
+      width: 100,
+      render: (value: string | null) =>
+        value === null ? <Tag color="success">有效</Tag> : <Tag>已吊销</Tag>,
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 100,
+      render: (_value, record) =>
+        record.revokedAt === null ? (
+          <Popconfirm
+            title="吊销该令牌？"
+            description="使用该令牌的 Hook 与 CI 将立即失效。"
+            okText="吊销"
+            okButtonProps={{ danger: true }}
+            cancelText="取消"
+            onConfirm={() => revokeMutation.mutate(record.id)}
+          >
+            <Button size="small" danger>
+              吊销
+            </Button>
+          </Popconfirm>
+        ) : null,
+    },
+  ];
+
+  const script = scriptQuery.data;
 
   return (
     <div className="page-stack">
       <PageHeader
-        eyebrow="Admin / Hook"
-        title="Git Hook 安装"
-        description="安装 pre-commit hook 后，每次提交前会自动运行 fast 模式审查，未达阻断阈值才允许提交。"
+        eyebrow="Admin / Hook & CI"
+        title="Git Hook 与 CI"
+        description="由服务端把审查 hook 直接写入仓库，无需在本地执行任何命令；写入后每次提交都会自动审查。"
         extra={
           <Button
             icon={<ReloadOutlined />}
             loading={scriptQuery.isFetching}
-            onClick={() => void scriptQuery.refetch()}
+            onClick={() => {
+              void scriptQuery.refetch();
+              void tokensQuery.refetch();
+            }}
           >
-            重新获取
+            刷新
           </Button>
         }
       />
-      {scriptQuery.isError ? (
-        <ErrorAlert
-          error={scriptQuery.error}
-          title="Hook 脚本加载失败"
-          onRetry={() => void scriptQuery.refetch()}
+
+      {plainText !== null ? (
+        <Alert
+          type="success"
+          showIcon
+          title="令牌明文（仅本次显示）"
+          description={
+            <Space orientation="vertical" size={4} className="full-width">
+              <Typography.Text code copyable>
+                {plainText}
+              </Typography.Text>
+              <Typography.Text type="secondary">
+                安装时已自动写入目标的{' '}
+                <Typography.Text code>.ai-review-cache/hook-token</Typography.Text>
+                （已加入 .gitignore）。此处仅用于核对或手工配置其他环境。
+              </Typography.Text>
+            </Space>
+          }
+          closable
+          onClose={() => setPlainText(null)}
         />
       ) : null}
+
       <Row gutter={[16, 16]}>
-        <Col xs={24} lg={10}>
-          <Card className="surface-card" title={<CardHeading title="安装方式" />}>
-            <Steps
-              orientation="vertical"
-              size="small"
-              current={-1}
-              items={[
-                {
-                  title: '初始化 husky',
-                  content: (
-                    <Space orientation="vertical" size={4}>
-                      <Typography.Text type="secondary">
-                        在仓库根目录启用 husky v9：
-                      </Typography.Text>
-                      <Typography.Text code copyable>
-                        pnpm exec husky init
-                      </Typography.Text>
-                    </Space>
-                  ),
-                },
-                {
-                  title: '一键安装 CLI Hook',
-                  content: (
-                    <Space orientation="vertical" size={4}>
-                      <Typography.Text type="secondary">
-                        使用 CLI 自动写入 hook 并绑定审查命令：
-                      </Typography.Text>
-                      <Typography.Text code copyable>
-                        pnpm exec ai-review install-hook
-                      </Typography.Text>
-                    </Space>
-                  ),
-                },
-                {
-                  title: '或手动放置脚本',
-                  content: (
-                    <Typography.Text type="secondary">
-                      将右侧脚本保存为 <Typography.Text code>.husky/pre-commit</Typography.Text>
-                      ，并确保文件可执行。
-                    </Typography.Text>
-                  ),
-                },
-                {
-                  title: '提交时自动审查',
-                  content: (
-                    <Typography.Text type="secondary">
-                      hook 读取暂存区变更；达到阻断阈值时退出码为 1，阻止本次提交。
-                    </Typography.Text>
-                  ),
-                },
-              ]}
-            />
-            <Alert
-              className="hook-note"
-              type="info"
-              showIcon
-              title="服务端无法写入你本地的文件系统"
-              description="请在本机执行上述命令，或复制脚本后手动创建 hook 文件。"
-            />
+        <Col xs={24} lg={12}>
+          <Card className="surface-card" title={<CardHeading title="一键安装" />}>
+            <Space orientation="vertical" size={12} className="full-width">
+              <div>
+                <Typography.Text strong>目标仓库</Typography.Text>
+                <AutoComplete
+                  className="full-width"
+                  value={repoPath}
+                  onChange={setRepoPath}
+                  placeholder="选择仓库，或粘贴绝对路径"
+                  options={(reposQuery.data ?? []).map((repo) => ({
+                    value: repo.path,
+                    label: `${repo.name}${repo.reviewed ? ' · 历史' : ''} — ${repo.path}`,
+                  }))}
+                  filterOption={(input, option) =>
+                    String(option?.value ?? '')
+                      .toLowerCase()
+                      .includes(input.toLowerCase())
+                  }
+                />
+              </div>
+              <div>
+                <Typography.Text strong>令牌标签</Typography.Text>
+                <Input
+                  value={tokenLabel}
+                  onChange={(event) => setTokenLabel(event.target.value)}
+                  placeholder="pre-commit"
+                />
+                <Typography.Text type="secondary" className="config-help">
+                  安装会签发一个新令牌并写入目标仓库，可在下方列表中随时吊销。
+                </Typography.Text>
+              </div>
+              <Space>
+                <Switch checked={overwrite} onChange={setOverwrite} />
+                <Typography.Text>覆盖已有 Hook</Typography.Text>
+              </Space>
+              <Button
+                type="primary"
+                icon={<SafetyCertificateOutlined />}
+                loading={installMutation.isPending}
+                disabled={repoPath.trim() === '' || tokenLabel.trim() === ''}
+                onClick={() => installMutation.mutate()}
+              >
+                安装到此仓库
+              </Button>
+              <Alert
+                type="info"
+                showIcon
+                title="服务端会写入两个文件"
+                description={
+                  <span>
+                    <Typography.Text code>.husky/pre-commit</Typography.Text>（入口）与{' '}
+                    <Typography.Text code>.ai-review/hooks/pre-commit.mjs</Typography.Text>
+                    （Node 运行器）。审查服务不可达时退出码为 3，不阻断提交。
+                  </span>
+                }
+              />
+            </Space>
           </Card>
-        </Col>
-        <Col xs={24} lg={14}>
+
           <Card
             className="surface-card"
-            title={<CardHeading title="pre-commit 脚本" />}
+            title={<CardHeading title="CI 集成" hint="GitHub Actions 示例" />}
+            extra={
+              <Button icon={<CopyOutlined />} onClick={() => void copy(CI_SNIPPET, 'CI 步骤')}>
+                复制
+              </Button>
+            }
+          >
+            <Typography.Paragraph type="secondary">
+              CI 使用同一个同步端点与令牌：响应中的{' '}
+              <Typography.Text code>exitCode</Typography.Text> 沿用 0 通过 / 1 阻断 / 2 配置环境错误
+              / 3 超时的契约。
+            </Typography.Paragraph>
+            <CodeBlock code={CI_SNIPPET} title=".github/workflows/ai-review.yml" maxHeight={280} />
+          </Card>
+        </Col>
+
+        <Col xs={24} lg={12}>
+          <Card
+            className="surface-card"
+            title={<CardHeading title="Hook 脚本内容" />}
             extra={
               <Space>
-                <Tooltip title={script === undefined ? '脚本尚未加载' : '复制到剪贴板'}>
+                <Tooltip title="复制入口脚本">
                   <Button
                     icon={<CopyOutlined />}
                     disabled={script === undefined}
-                    onClick={() => void copy(script ?? '', '脚本')}
+                    onClick={() => void copy(script?.shell ?? '', '入口脚本')}
                   >
                     复制
                   </Button>
@@ -162,34 +321,91 @@ export function AdminHookPage(): ReactElement {
                 <Button
                   icon={<DownloadOutlined />}
                   disabled={script === undefined}
-                  onClick={download}
+                  onClick={() => download(script?.runner ?? '', 'pre-commit.mjs')}
                 >
-                  下载
+                  下载运行器
                 </Button>
               </Space>
             }
           >
             {scriptQuery.isPending ? (
               <Skeleton active paragraph={{ rows: 6 }} />
+            ) : scriptQuery.isError ? (
+              <ErrorAlert
+                error={scriptQuery.error}
+                title="脚本加载失败"
+                onRetry={() => void scriptQuery.refetch()}
+              />
             ) : script === undefined ? (
-              <Typography.Text type="secondary">暂无可用脚本</Typography.Text>
+              <EmptyState title="暂无可用脚本" description="请检查服务端配置后刷新。" />
             ) : (
-              <CodeBlock code={script} title=".husky/pre-commit" showLineNumbers maxHeight={420} />
+              <Tabs
+                items={[
+                  {
+                    key: 'shell',
+                    label: script.paths.shell,
+                    children: (
+                      <CodeBlock code={script.shell} title={script.paths.shell} maxHeight={300} />
+                    ),
+                  },
+                  {
+                    key: 'runner',
+                    label: script.paths.runner,
+                    children: (
+                      <CodeBlock
+                        code={script.runner}
+                        title={script.paths.runner}
+                        showLineNumbers
+                        maxHeight={360}
+                      />
+                    ),
+                  },
+                ]}
+              />
             )}
-          </Card>
-          <Card
-            className="surface-card"
-            title={<CardHeading title="手动安装命令" />}
-            extra={
-              <Button icon={<CopyOutlined />} onClick={() => void copy(MANUAL_COMMAND, '命令')}>
-                复制命令
-              </Button>
-            }
-          >
-            <CodeBlock code={MANUAL_COMMAND} title="macOS / Linux" maxHeight={240} />
           </Card>
         </Col>
       </Row>
+
+      <Card
+        className="surface-card"
+        title={<CardHeading title="访问令牌" hint="用于 Hook 与 CI" />}
+        extra={
+          <Button
+            icon={<KeyOutlined />}
+            loading={tokenMutation.isPending}
+            onClick={() => tokenMutation.mutate()}
+          >
+            签发新令牌
+          </Button>
+        }
+      >
+        {tokensQuery.isError ? (
+          <ErrorAlert
+            error={tokensQuery.error}
+            title="令牌列表加载失败"
+            onRetry={() => void tokensQuery.refetch()}
+          />
+        ) : (
+          <Table<HookToken>
+            size="small"
+            rowKey="id"
+            loading={tokensQuery.isPending}
+            dataSource={tokensQuery.data ?? []}
+            columns={tokenColumns}
+            pagination={false}
+            locale={{ emptyText: '尚无令牌，安装 Hook 或点击「签发新令牌」即可创建。' }}
+          />
+        )}
+        <Descriptions className="knowledge-meta" column={1} bordered size="small">
+          <Descriptions.Item label="调用地址">
+            <Typography.Text code>/api/hooks/review</Typography.Text>
+          </Descriptions.Item>
+          <Descriptions.Item label="鉴权方式">
+            <Typography.Text code>Authorization: Bearer &lt;token&gt;</Typography.Text>
+          </Descriptions.Item>
+        </Descriptions>
+      </Card>
     </div>
   );
 }

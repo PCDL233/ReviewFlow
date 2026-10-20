@@ -70,7 +70,7 @@ const ADMIN_MENU: AdminMenuEntry[] = [
       { key: '/admin/ai', label: 'AI 模型', icon: <RobotOutlined /> },
       { key: '/admin/config', label: '系统配置', icon: <SettingOutlined /> },
       { key: '/admin/init', label: '配置初始化', icon: <FileAddOutlined /> },
-      { key: '/admin/hook', label: 'Hook 安装', icon: <BugOutlined /> },
+      { key: '/admin/hook', label: 'Git Hook 与 CI', icon: <BugOutlined /> },
     ],
   },
   {

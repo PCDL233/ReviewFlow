@@ -67,6 +67,10 @@ export const AiReviewConfigSchema = z.object({
       ignorePatterns: z
         .array(z.string())
         .default(['*.lock', 'pnpm-lock.yaml', 'dist/**', '*.min.js']),
+      /** 单次审查最多纳入的文件数（按风险分降序截断）；超限文件在报告中显式标注 */
+      maxFiles: z.number().int().min(1).max(2000).default(200),
+      /** 单次审查最多纳入的变更行数（additions + deletions）；超限按文件截断 */
+      maxChangedLines: z.number().int().min(100).max(200_000).default(20_000),
     })
     .prefault({}),
   rag: z
@@ -96,7 +100,9 @@ export const AiReviewConfigSchema = z.object({
   report: z
     .object({
       format: z.enum(['markdown', 'html', 'json']).default('markdown'),
+      /** 导出默认目录提示（Web 端导出走浏览器下载，服务端不再写盘） */
       outputDir: z.string().default('.ai-review-reports'),
+      /** 报告中是否保留 PRAISE（正向提示）级发现 */
       includePraise: z.boolean().default(true),
     })
     .prefault({}),
@@ -137,6 +143,10 @@ export const AiReviewConfigSchema = z.object({
       trustProxy: z.boolean().default(false),
       /** Ollama 回退模型（云端 provider 不可用时的本地兜底；等价 AI_REVIEW_OLLAMA_MODEL） */
       ollamaModel: z.string().default('qwen3-coder:30b'),
+      /** Hook/CI 同步审查的超时（毫秒）；超时返回退出码 3 且不阻断提交 */
+      hookTimeoutMs: z.number().int().min(10_000).max(600_000).default(120_000),
+      /** 是否暴露 /api/mcp（MCP over Streamable HTTP）；默认关闭 */
+      mcpEnabled: z.boolean().default(false),
     })
     .prefault({}),
 });

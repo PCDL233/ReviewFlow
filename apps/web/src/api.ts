@@ -13,13 +13,29 @@ import {
   KnowledgeStatusResponseSchema,
   KnowledgeReindexResponseSchema,
   FindingSchema,
+  RepositoryListResponseSchema,
+  RepoStatusResponseSchema,
+  RepoBranchListResponseSchema,
+  RepoCommitListResponseSchema,
+  HookTokenListResponseSchema,
+  CreateHookTokenResponseSchema,
+  HookScriptSchema,
+  InstallHookResponseSchema,
 } from '@ai-review/shared/api';
 import type {
   AdminConfig,
   Finding,
+  HookScript,
+  HookToken,
+  InstallHookResponse,
   KnowledgeStatus,
+  RepoBranch,
+  RepoCommit,
+  RepoStatus,
+  Repository,
   ReviewListItem,
   ReviewReportDetail,
+  ReviewSource,
   ReviewStats,
   ServerRuntime,
 } from '@ai-review/shared/api';
@@ -72,18 +88,68 @@ export async function startReview(
   repoPath: string,
   mode?: 'fast' | 'full',
   blockOn?: 'BLOCKER' | 'WARNING' | 'NIT',
+  source?: ReviewSource,
 ): Promise<string> {
+  // 判空 + 展开：exactOptionalPropertyTypes 下不能显式传 undefined
+  const payload = {
+    repoPath,
+    ...(mode === undefined ? {} : { mode }),
+    ...(blockOn === undefined ? {} : { blockOn }),
+    ...(source === undefined ? {} : { target: source.target }),
+    ...(source !== undefined && source.target === 'commit' ? { commit: source.commit } : {}),
+    ...(source !== undefined && source.target === 'range' ? { base: source.base } : {}),
+  };
   const response = await fetch(`${API_BASE}/reviews`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      repoPath,
-      ...(mode !== undefined ? { mode } : {}),
-      ...(blockOn !== undefined ? { blockOn } : {}),
-    }),
+    body: JSON.stringify(payload),
   });
   const body = await parseResponse(StartReviewResponseSchema, response);
   return body.reviewId;
+}
+
+/** 可用于发起审查的仓库列表（服务端扫描 allowedRoots + 历史审查记录） */
+export async function fetchRepositories(): Promise<Repository[]> {
+  const body = await parseResponse(
+    RepositoryListResponseSchema,
+    await fetch(`${API_BASE}/repos`),
+  );
+  return body.repositories;
+}
+
+/** 仓库工作区状态（发起审查前的即时校验依据） */
+export async function fetchRepoStatus(repoPath: string): Promise<RepoStatus> {
+  const params = new URLSearchParams({ repoPath });
+  const body = await parseResponse(
+    RepoStatusResponseSchema,
+    await fetch(`${API_BASE}/repos/status?${params.toString()}`),
+  );
+  return body.status;
+}
+
+/** 仓库分支列表（区间审查的 base 选择器数据源） */
+export async function fetchRepoBranches(repoPath: string): Promise<RepoBranch[]> {
+  const params = new URLSearchParams({ repoPath });
+  const body = await parseResponse(
+    RepoBranchListResponseSchema,
+    await fetch(`${API_BASE}/repos/branches?${params.toString()}`),
+  );
+  return body.branches;
+}
+
+/** 仓库提交列表（单提交审查与区间审查的选择器数据源） */
+export async function fetchRepoCommits(
+  repoPath: string,
+  ref?: string,
+  limit = 50,
+): Promise<RepoCommit[]> {
+  const params = new URLSearchParams({ repoPath, limit: String(limit) });
+  if (ref !== undefined) params.set('ref', ref);
+  const body = await parseResponse(
+    RepoCommitListResponseSchema,
+    await fetch(`${API_BASE}/repos/commits?${params.toString()}`),
+  );
+  return body.commits;
 }
 
 export async function markFalsePositive(
@@ -240,12 +306,63 @@ export async function analyzeComplexity(
   return body.functions;
 }
 
-export async function fetchHookScript(): Promise<string> {
-  const response = await fetch(`${API_BASE}/admin/tools/hook-script`);
-  if (!response.ok) throw new ApiError(`获取 Hook 脚本失败（HTTP ${response.status}）`);
-  const text = await response.text();
-  if (text.trim() === '') throw new ApiError('Hook 脚本内容为空');
-  return text;
+export async function fetchHookScript(serverUrl?: string): Promise<HookScript> {
+  const params = serverUrl === undefined ? '' : `?serverUrl=${encodeURIComponent(serverUrl)}`;
+  return parseResponse(HookScriptSchema, await fetch(`${API_BASE}/admin/hooks/script${params}`));
+}
+
+/** 已签发的 Hook 令牌（不含明文） */
+export async function fetchHookTokens(): Promise<HookToken[]> {
+  const body = await parseResponse(
+    HookTokenListResponseSchema,
+    await fetch(`${API_BASE}/admin/hooks/tokens`),
+  );
+  return body.tokens;
+}
+
+/** 签发新令牌；明文仅在本响应中出现一次 */
+export async function createHookToken(
+  label: string,
+  expiresInDays = 90,
+): Promise<{ token: HookToken; plainText: string }> {
+  return parseResponse(
+    CreateHookTokenResponseSchema,
+    await fetch(`${API_BASE}/admin/hooks/tokens`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label, expiresInDays }),
+    }),
+  );
+}
+
+/** 吊销令牌 */
+export async function revokeHookToken(id: string): Promise<void> {
+  await parseResponse(
+    z.object({ revoked: z.boolean() }),
+    await fetch(`${API_BASE}/admin/hooks/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  );
+}
+
+/** 在指定仓库安装 hook（服务端写盘），返回写入的文件与本次签发的令牌明文 */
+export async function installHook(input: {
+  repoPath: string;
+  serverUrl?: string;
+  tokenLabel?: string;
+  overwrite?: boolean;
+}): Promise<InstallHookResponse> {
+  return parseResponse(
+    InstallHookResponseSchema,
+    await fetch(`${API_BASE}/admin/hooks/install`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        repoPath: input.repoPath,
+        ...(input.serverUrl === undefined ? {} : { serverUrl: input.serverUrl }),
+        ...(input.tokenLabel === undefined ? {} : { tokenLabel: input.tokenLabel }),
+        ...(input.overwrite === undefined ? {} : { overwrite: input.overwrite }),
+      }),
+    }),
+  );
 }
 
 /** Prometheus 文本指标：非 200 时抛出可读错误，避免把错误页当成指标渲染。 */

@@ -1416,8 +1416,21 @@ describe('hardening: rate limits, registration gating, repoPath, constant-time l
       });
       expect(res.status).toBe(400);
     }
-    // 白名单根（makeHarness 使用 ['D:/']）之外的路径同样拒绝
-    const app2 = makeHarness(async () => makeState());
+    // 白名单根之外的路径同样拒绝。注意：Windows 上 `resolve('/etc/passwd')` 会得到
+    // `<当前盘符>:\etc\passwd`，落在 `D:/` 之内，因此这里用一个明确不在白名单内的根。
+    const sqlite = openSqlite(':memory:');
+    const store = new ReviewStore(sqlite);
+    const users = new UserStore(sqlite);
+    const metrics = createReviewMetrics();
+    const service = new ReviewService(store, makeDeps, async () => makeState(), metrics);
+    const app2 = buildApp({
+      store,
+      users,
+      service,
+      metrics,
+      registrationOpen: true,
+      allowedRoots: ['D:/allowed-only'],
+    });
     const { cookie: cookie2 } = await registerUser(app2, 'boss');
     const res2 = await app2.request('/api/reviews', {
       method: 'POST',

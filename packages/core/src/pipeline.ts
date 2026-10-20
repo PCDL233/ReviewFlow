@@ -58,6 +58,9 @@ export function routeAfterValidate(state: ReviewState): 'heal' | 'report' {
  * 装配 LangGraph 审查流水线（方案 3.9）：
  * parse → riskPlan → fan-out [correctness, security, performance + static] → validate
  * →（条件边）heal 自愈回退，上限 3 轮 → report。
+ * 图结构保持固定（LangGraph 的编译期类型推导依赖静态节点集合）；
+ * review.dimensions 的裁剪在 review 节点内短路（不调用 Provider，不产生 token 消耗），
+ * 因此关闭某维度等价于从 fan-out 中移除该分支。
  * checkpointer 在每个 superstep 后保存状态快照，兑现"可审计原则"。
  * @param deps 流水线依赖（面向接口注入）
  * @returns 编译后的图（可 invoke / stream）

@@ -1,4 +1,7 @@
-# PR 自动审查（方案 7.3）：full 模式审查 base...HEAD 区间，结果以 PR 评论回帖
+# PR 自动审查（方案 7.3）：通过服务的同步审查端点触发，退出码契约与 pre-commit hook 一致。
+#
+# 为什么不再直接跑 CLI：审查能力已统一由 Web/HTTP 提供，CI 与本地 hook 使用同一个端点，
+# 避免"两套实现、两套规则"的漂移。结果仍回帖到 PR 评论。
 name: AI Code Review
 
 on:
@@ -15,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # --base 区间 diff 需要 base 引用的完整历史
+          fetch-depth: 0 # range 模式的基线需要完整历史
 
       - uses: pnpm/action-setup@v4
 
@@ -25,58 +28,79 @@ jobs:
           cache: pnpm
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm turbo build --filter=@ai-review/cli...
+      - run: pnpm turbo build
 
-      - name: Run AI Review
-        id: review
+      # 审查服务需要读取本仓库工作副本：在 runner 内启动一次（团队部署见 docker-compose.yml）
+      - name: Start review server
         env:
           AI_REVIEW_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AI_REVIEW_ALLOWED_ROOTS: ${{ github.workspace }}
+          AI_REVIEW_ALLOW_REGISTER: 'true'
         run: |
-          mkdir -p .ai-review-reports
+          node apps/server/dist/main.js \
+            --port 8080 \
+            --db .ai-review-cache/reviews.db \
+            --web-dist apps/web/dist &
+          for _ in $(seq 1 60); do
+            curl -fsS http://localhost:8080/api/auth/me > /dev/null 2>&1 && break
+            sleep 1
+          done
+
+      # 注册一次性管理员 → 签发 CI 专用令牌（明文只在内存中，写进 GITHUB_OUTPUT 前先打码）
+      - name: Issue hook token
+        id: token
+        run: |
+          curl -fsS -X POST http://localhost:8080/api/auth/register \
+            -H 'content-type: application/json' \
+            -d '{"username":"ci-reviewer","password":"ci-password-${{ github.run_id }}"}' > /dev/null
+
+          curl -fsS -X POST http://localhost:8080/api/auth/login \
+            -H 'content-type: application/json' \
+            -c cookies.txt \
+            -d '{"username":"ci-reviewer","password":"ci-password-${{ github.run_id }}"}' > /dev/null
+
+          curl -fsS -X POST http://localhost:8080/api/admin/hooks/tokens \
+            -b cookies.txt \
+            -H 'content-type: application/json' \
+            -d '{"label":"github-actions","expiresInDays":7}' \
+            -o token.json
+
+          plain=$(node -p "JSON.parse(require('node:fs').readFileSync('token.json','utf8')).plainText")
+          echo "::add-mask::$plain"
+          echo "token=$plain" >> "$GITHUB_OUTPUT"
+
+      - name: Run AI review
+        run: |
           set +e
-          pnpm exec ai-review run \
-            --base "origin/${{ github.base_ref }}" \
-            --mode full --block-on BLOCKER --json \
-            > .ai-review-reports/latest.json
-          # 退出码 1 表示存在阻断发现，属预期结果而非工作流失败
-          echo "exit_code=$?" >> "$GITHUB_OUTPUT"
+          curl -sS -X POST http://localhost:8080/api/hooks/review \
+            -H "authorization: Bearer ${{ steps.token.outputs.token }}" \
+            -H 'content-type: application/json' \
+            -d '{"repoPath":"${{ github.workspace }}","target":"range","base":"origin/${{ github.base_ref }}","mode":"full","blockOn":"BLOCKER"}' \
+            -o review.json
+          cat review.json
+          # 退出码 1（存在阻断发现）属预期结果，不作为工作流失败
           exit 0
 
-      - name: Post Review Comment
+      - name: Post review comment
         uses: actions/github-script@v7
         with:
           script: |
             const fs = require('node:fs');
-            const report = JSON.parse(
-              fs.readFileSync('.ai-review-reports/latest.json', 'utf8'),
-            );
-            const blockers = report.findings.filter(
-              (f) => f.severity === 'BLOCKER',
-            ).length;
-            const rows = report.findings.length === 0
-              ? '| - | - | 无发现 | - |'
-              : report.findings
-                  .map((f) =>
-                    [
-                      f.severity,
-                      `${f.filePath}:${f.lineStart}`,
-                      f.title,
-                      `${Math.round((f.confidence ?? 0) * 100)}%`,
-                    ].join(' | '),
-                  )
-                  .map((row) => `| ${row} |`)
-                  .join('\n');
-            const body = [
-              '## AI Code Review 报告',
-              `- 风险评分：${report.meta.riskScore}/100`,
-              `- BLOCKER 数量：${blockers}`,
-              '',
-              '| 严重度 | 位置 | 问题 | 置信度 |',
-              '|--------|------|------|--------|',
-              rows,
-              '',
-              report.assessment,
-            ].join('\n');
+            let body;
+            try {
+              const result = JSON.parse(fs.readFileSync('review.json', 'utf8'));
+              body = [
+                '## AI Code Review 报告',
+                `- 审查 ID：\`${result.reviewId}\``,
+                `- 风险评分：${result.riskScore}/100`,
+                `- BLOCKER 数量：${result.blockerCount}`,
+                `- 退出码：${result.exitCode}（0 通过 / 1 阻断 / 2 配置错误 / 3 超时）`,
+                '',
+                result.summary,
+              ].join('\n');
+            } catch (error) {
+              body = `## AI Code Review 报告\n\n审查调用失败：${error.message}`;
+            }
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,

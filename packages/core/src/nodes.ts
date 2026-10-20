@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import pMap from 'p-map';
 import { ReviewAgent } from '@ai-review/agents';
 import { DiffContextBuilder } from '@ai-review/diff';
 import type { GitReader } from '@ai-review/diff';
@@ -12,6 +13,7 @@ import type {
   IgnoreRules,
   RagRetriever,
   ReviewPlan,
+  ReviewSource,
 } from '@ai-review/shared';
 import type { RunnableConfig } from '@langchain/core/runnables';
 import { crossValidate } from './cross-validate.js';
@@ -21,6 +23,23 @@ import type { ReviewState } from './state.js';
 /** LLM 语义审查承担的三个维度（方案 3.3 三 Agent）；static 由工具总线产出 */
 const LLM_DIMENSIONS = ['correctness', 'security', 'performance'] as const;
 export type LlmDimension = (typeof LLM_DIMENSIONS)[number];
+
+function isLlmDimension(value: string): value is LlmDimension {
+  return LLM_DIMENSIONS.some((dimension) => dimension === value);
+}
+
+/**
+ * 将配置的 review.dimensions 收敛为可执行的 LLM 维度集合。
+ * maintainability 由静态工具与 LLM 语义共同覆盖，但没有独立 Agent，
+ * 因此只保留有 Provider 的三维；配置为空或缺省时退回全量三维。
+ * @param configured 配置中的维度名
+ * @returns 实际参与 fan-out 的维度（顺序固定，保证图结构稳定）
+ */
+export function resolveReviewDimensions(configured?: readonly string[]): LlmDimension[] {
+  if (configured === undefined || configured.length === 0) return [...LLM_DIMENSIONS];
+  const selected = configured.filter(isLlmDimension);
+  return selected.length === 0 ? [...LLM_DIMENSIONS] : [...new Set(selected)];
+}
 
 /**
  * 审查缓存 Prompt 版本（方案 3.0 步骤 8 缓存键的组成：内容哈希 + agent + prompt 版本）。
@@ -50,13 +69,19 @@ export type PipelineDeps = {
   rag: RagRetriever;
   ignores: IgnoreRules;
   history: FileHistory;
-  /** 三个 LLM 审查维度的 Provider；fast 模式仅 deep 文件，full 模式 deep+quick */
+  /** LLM 审查维度的 Provider；fast 模式仅 deep 文件，full 模式 deep+quick */
   providers: Record<LlmDimension, ReviewProvider>;
   registry: ToolRegistry;
   mode: 'fast' | 'full';
-  /** CI 区间审查基线（方案 3.11 `run --base <ref>`）；undefined 表示默认暂存区审查 */
-  base?: string | undefined;
-  /** 审查缓存（方案 3.0 步骤 8）；undefined 表示禁用缓存（CLI 默认） */
+  /** 审查来源（暂存区/工作区/单提交/区间）；缺省为暂存区 */
+  source?: ReviewSource | undefined;
+  /** 实际启用的 LLM 维度（review.dimensions 收敛后）；缺省为全部三维 */
+  dimensions?: readonly LlmDimension[] | undefined;
+  /** 单次审查纳入的文件数上限（review.maxFiles）；超限按风险分降序截断并在报告中标注 */
+  maxFiles?: number | undefined;
+  /** 单次审查纳入的变更行数上限（review.maxChangedLines）；超限按文件截断 */
+  maxChangedLines?: number | undefined;
+  /** 审查缓存（方案 3.0 步骤 8）；undefined 表示禁用缓存 */
   reviewCache?: ReviewCache | undefined;
   /** token 硬预算；预算耗尽时低优先级文件降级为 staticOnly（方案 3.3） */
   budget?: TokenBudget | undefined;
@@ -97,23 +122,20 @@ function selectFiles(context: CodeContext, paths: ReadonlySet<string>): CodeCont
   return { files, metadata: { ...context.metadata, totalFiles: files.length } };
 }
 
-/** 读取 diff（暂存区或 base...HEAD 区间）并构建上下文包（方案 3.1） */
+/** 读取 diff（按审查来源）并构建上下文包（方案 3.1） */
 export function makeParseNode(deps: PipelineDeps): PipelineNode {
   const builder = new DiffContextBuilder(
     deps.gitReader,
     deps.rag,
     deps.ignores,
     50,
-    deps.base,
+    deps.source ?? { target: 'staged' },
     deps.ragTopK,
   );
-  return async (state) => {
-    void state;
-    const rawDiff =
-      deps.base === undefined
-        ? await deps.gitReader.readStagedDiff()
-        : await deps.gitReader.readRangeDiff(deps.base);
-    return { context: await builder.build(), rawDiff };
+  return async () => {
+    // build() 同时返回原始 diff，避免此处再执行一次 git diff（大仓库下是可观的额外开销）
+    const { context, rawDiff } = await builder.build();
+    return { context, rawDiff };
   };
 }
 
@@ -145,12 +167,60 @@ function applyBudget(
   return { plan: { deep, quick, staticOnly }, degraded };
 }
 
-/** 风险规划分流 + 预算降级（方案 3.2/3.3） */
+/**
+ * 规模上限（review.maxFiles / review.maxChangedLines）：
+ * 超出上限的文件降级为 staticOnly 并记录到 truncatedFiles——
+ * 报告必须显式标注"未完整 LLM 审查"，不能静默丢弃。
+ * @param plan 风险规划结果（已按分数降序）
+ * @param maxFiles 文件数上限；undefined 表示不限制
+ * @param maxChangedLines 变更行数上限；undefined 表示不限制
+ * @returns 截断后的计划与被截断文件路径
+ */
+export function applySizeLimits(
+  plan: ReviewPlan,
+  maxFiles: number | undefined,
+  maxChangedLines: number | undefined,
+): { plan: ReviewPlan; truncated: string[] } {
+  if (maxFiles === undefined && maxChangedLines === undefined) {
+    return { plan, truncated: [] };
+  }
+  const fileLimit = maxFiles ?? Number.POSITIVE_INFINITY;
+  const lineLimit = maxChangedLines ?? Number.POSITIVE_INFINITY;
+  // 已有 staticOnly 的文件本来就不进 LLM，无需计入额度
+  const candidates = [...plan.deep, ...plan.quick];
+  const keptStatic = [...plan.staticOnly];
+  const kept = [];
+  const truncated: string[] = [];
+  let usedLines = 0;
+  for (const file of candidates) {
+    const changed = file.diff.additions + file.diff.deletions;
+    const overFiles = kept.length >= fileLimit;
+    const overLines = usedLines + changed > lineLimit;
+    if (overFiles || overLines) {
+      keptStatic.push(file);
+      truncated.push(file.diff.path);
+      continue;
+    }
+    usedLines += changed;
+    kept.push(file);
+  }
+  return {
+    plan: {
+      deep: kept.filter((file) => file.score >= 60),
+      quick: kept.filter((file) => file.score < 60),
+      staticOnly: keptStatic,
+    },
+    truncated,
+  };
+}
+
+/** 风险规划分流 + 预算降级 + 规模上限（方案 3.2/3.3） */
 export function makePlanNode(deps: PipelineDeps): PipelineNode {
   const planner = new RiskPlanner(deps.history);
   return async (state) => {
-    const plan = await planner.plan(state.context.files.map((file) => file.diff));
-    const budgeted = applyBudget(plan, deps.budget);
+    const planned = await planner.plan(state.context.files.map((file) => file.diff));
+    const limited = applySizeLimits(planned, deps.maxFiles, deps.maxChangedLines);
+    const budgeted = applyBudget(limited.plan, deps.budget);
     return {
       plan: budgeted.plan,
       metrics: {
@@ -159,6 +229,8 @@ export function makePlanNode(deps: PipelineDeps): PipelineNode {
         filesQuick: budgeted.plan.quick.length,
         filesStaticOnly: budgeted.plan.staticOnly.length,
         degradedToStatic: budgeted.degraded,
+        truncatedFiles: limited.truncated,
+        dimensions: [...(deps.dimensions ?? LLM_DIMENSIONS)],
       },
     };
   };
@@ -168,7 +240,10 @@ export function makePlanNode(deps: PipelineDeps): PipelineNode {
 export function makeReviewNode(dimension: LlmDimension, deps: PipelineDeps): PipelineNode {
   const agent = new ReviewAgent(deps.providers[dimension]);
   const cache = deps.reviewCache;
+  const enabled = (deps.dimensions ?? LLM_DIMENSIONS).includes(dimension);
   return async (state, config) => {
+    // 维度被 review.dimensions 关闭：短路为空结果，不调用 Provider（无 token 成本）
+    if (!enabled) return { findings: [] };
     const selected =
       deps.mode === 'fast' ? state.plan.deep : [...state.plan.deep, ...state.plan.quick];
     const paths = new Set(selected.map((file) => file.diff.path));
@@ -232,24 +307,45 @@ function isHealCandidate(finding: ReviewState['findings'][number]): boolean {
 
 /**
  * 自愈回退（方案 3.7）：将低置信度 BLOCKER 涉及的文件收窄为重审范围，
- * 携带完整上下文重新调用全部 LLM 维度；轮次由条件边控制，逐轮消耗独立计入预算。
+ * 携带完整上下文重新调用全部启用的 LLM 维度。
+ * 受 token 预算与并发上限约束：预算不足时跳过本轮（记入 metrics 并在报告中体现），
+ * 避免自愈路径绕过预算成为成本黑洞。
  */
 export function makeHealNode(deps: PipelineDeps): PipelineNode {
+  const dimensions = deps.dimensions ?? [...LLM_DIMENSIONS];
   return async (state, config) => {
     const targets = new Set(
       state.findings.filter(isHealCandidate).map((finding) => finding.filePath),
     );
     const subContext = selectFiles(state.context, targets);
-    const findings =
-      subContext.files.length === 0
-        ? []
-        : await Promise.all(
-            LLM_DIMENSIONS.map(async (dimension) =>
-              new ReviewAgent(deps.providers[dimension]).review(subContext, config.signal),
-            ),
-          ).then((groups) => groups.flat());
     const healRounds = state.healRounds + 1;
-    return { findings, healRounds, metrics: { ...state.metrics, healRounds } };
+    if (subContext.files.length === 0) {
+      return { findings: [], healRounds, metrics: { ...state.metrics, healRounds } };
+    }
+
+    // 预算：重审同一批文件，逐文件预留；余额不足的文件不再重审（保守地保留原发现）
+    const affordable =
+      deps.budget === undefined
+        ? subContext.files
+        : subContext.files.filter((file) => deps.budget?.tryReserve(estimateTokens(file.diff)));
+    if (affordable.length === 0) {
+      return { findings: [], healRounds, metrics: { ...state.metrics, healRounds } };
+    }
+
+    const healContext: CodeContext = {
+      files: affordable,
+      metadata: { ...subContext.metadata, totalFiles: affordable.length },
+    };
+    const groups = await pMap(
+      dimensions,
+      (dimension) => new ReviewAgent(deps.providers[dimension]).review(healContext, config.signal),
+      { concurrency: 3 },
+    );
+    return {
+      findings: groups.flat(),
+      healRounds,
+      metrics: { ...state.metrics, healRounds },
+    };
   };
 }
 

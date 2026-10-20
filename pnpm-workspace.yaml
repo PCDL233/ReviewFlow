@@ -30,8 +30,6 @@ catalog:
   p-limit: ^7.3.2
   picomatch: ^4.0.7
   yaml: ^2.9.0
-  commander: ^15.0.0
-  '@clack/prompts': ^1.8.0
   # —— Phase 3 团队版：Hono API + SSE / Drizzle SQLite / React 19 Dashboard ——
   hono: ^4.13.7
   '@hono/zod-validator': ^0.9.1

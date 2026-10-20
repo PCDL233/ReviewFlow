@@ -17,6 +17,10 @@ export const reviews = sqliteTable('reviews', {
   mode: text('mode', { enum: ['fast', 'full'] }).notNull(),
   /** 发起时配置的阻断阈值（SSE 晚连接重放需按原阈值重算 blocking）；存量记录为 NULL（等同 BLOCKER） */
   blockOn: text('block_on', { enum: ['BLOCKER', 'WARNING', 'NIT'] }),
+  /** 审查目标（staged/worktree/commit/range）；存量记录为 NULL（等同 staged） */
+  target: text('target'),
+  /** 审查来源的可读描述（如 range:main...HEAD），供列表页展示 */
+  sourceLabel: text('source_label'),
   status: text('status', { enum: ['completed', 'failed', 'cancelled'] })
     .notNull()
     .default('completed'),
@@ -204,6 +208,10 @@ export const operationLogs = sqliteTable(
         'save_rules',
         'test_rules',
         'reindex_knowledge',
+        'install_hook',
+        'rotate_hook_token',
+        'revoke_hook_token',
+        'run_hook_review',
       ],
     }).notNull(),
     /** 资源类型（user / role / config / rules / review / finding / knowledge / auth） */
@@ -244,6 +252,33 @@ export const userRoles = sqliteTable(
   (table) => [primaryKey({ columns: [table.userId, table.roleId] })],
 );
 
+/**
+ * Git Hook / CI 令牌表（Web 一键安装 Hook 的凭据）。
+ * 令牌以 SHA-256 摘要保存：数据库泄露不直接泄漏可用凭据；
+ * 明文只在签发响应中出现一次，落盘位置由安装接口写入 `.ai-review-cache/hook-token`（已 gitignore）。
+ */
+export const hookTokens = sqliteTable(
+  'hook_tokens',
+  {
+    id: text('id').primaryKey(),
+    /** 令牌摘要（sha256 hex）；比对按摘要进行，库内不存在明文 */
+    tokenHash: text('token_hash').notNull().unique(),
+    /** 展示用前缀（明文前 8 位），供管理员辨认具体令牌 */
+    prefix: text('prefix').notNull(),
+    label: text('label').notNull().default('hook'),
+    /** 签发人；令牌由管理员创建，故通常非 NULL */
+    createdBy: text('created_by'),
+    createdAt: text('created_at')
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    /** 过期时间；NULL 表示不过期 */
+    expiresAt: text('expires_at'),
+    lastUsedAt: text('last_used_at'),
+    revokedAt: text('revoked_at'),
+  },
+  (table) => [index('idx_hook_tokens_hash').on(table.tokenHash)],
+);
+
 export type ReviewRow = typeof reviews.$inferSelect;
 export type FindingRow = typeof findings.$inferSelect;
 export type ReviewCacheRow = typeof reviewCache.$inferSelect;
@@ -251,3 +286,4 @@ export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;
 export type LoginLogRow = typeof loginLogs.$inferSelect;
 export type OperationLogRow = typeof operationLogs.$inferSelect;
+export type HookTokenRow = typeof hookTokens.$inferSelect;

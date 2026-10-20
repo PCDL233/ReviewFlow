@@ -120,6 +120,8 @@ describe('loadConfig', () => {
       allowRegister: false,
       trustProxy: false,
       ollamaModel: 'qwen3-coder:30b',
+      hookTimeoutMs: 120_000,
+      mcpEnabled: false,
     });
   });
 
@@ -150,6 +152,8 @@ describe('loadConfig', () => {
       allowRegister: true,
       trustProxy: true,
       ollamaModel: 'qwen3-coder:14b',
+      hookTimeoutMs: 120_000,
+      mcpEnabled: false,
     });
   });
 

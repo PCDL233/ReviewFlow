@@ -28,7 +28,7 @@ export const ALL_ROUTE_PERMISSIONS: RoutePermission[] = [
   { path: '/admin/knowledge', label: '知识库', group: 'admin' },
   { path: '/admin/tools', label: '分析工具', group: 'admin' },
   { path: '/admin/init', label: '配置初始化', group: 'admin' },
-  { path: '/admin/hook', label: 'Hook 安装', group: 'admin' },
+  { path: '/admin/hook', label: 'Git Hook 与 CI', group: 'admin' },
   { path: '/admin/metrics', label: '系统指标', group: 'admin' },
 ];
 

@@ -85,7 +85,7 @@ export function AdminOverviewPage(): ReactElement {
   return (
     <div className="page-stack">
       {header}
-      <Row gutter={[16, 16]}>
+      <Row gutter={[16, 16]} align="stretch">
         <Col xs={12} lg={6}>
           <StatCard
             title="用户总数"

@@ -18,7 +18,7 @@ export function KpiGrid(props: { stats: ReviewStats | undefined; loading: boolea
     stats?.severityDistribution.find((item) => item.severity === 'WARNING')?.count ?? 0;
 
   return (
-    <Row gutter={[14, 14]}>
+    <Row gutter={[14, 14]} align="stretch">
       <Col xs={12} lg={6}>
         <StatCard
           title="发现总数"

@@ -290,13 +290,14 @@ export function StatisticsView(): ReactElement {
   return (
     <div className="page-stack">
       {header}
-      <Row gutter={[16, 16]}>
+      <Row gutter={[16, 16]} align="stretch">
         <Col xs={12} md={8} lg={4}>
           <StatCard
             title="审查总数"
             value={formatNumber(stats.totalReviews)}
             icon={<FileSearchOutlined />}
             accent="indigo"
+            hint="当前时间范围内的审查次数"
           />
         </Col>
         <Col xs={12} md={8} lg={4}>
@@ -305,6 +306,7 @@ export function StatisticsView(): ReactElement {
             value={formatNumber(stats.totalFindings)}
             icon={<AlertOutlined />}
             accent="amber"
+            hint="Agent 与静态分析累计发现"
           />
         </Col>
         <Col xs={12} md={8} lg={4}>

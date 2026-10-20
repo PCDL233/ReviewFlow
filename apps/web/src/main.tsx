@@ -12,6 +12,7 @@ import { queryClient } from './query-client';
 import { router } from './router';
 import { ThemeProvider, useTheme } from './theme-context';
 import { createAntdTheme } from './antd-theme';
+import { useReducedMotion } from './hooks/use-reduced-motion';
 import { setUnauthorizedHandler } from './parse-response';
 import { AUTH_QUERY_KEY } from './hooks/use-auth';
 import './styles.css';
@@ -31,9 +32,10 @@ setUnauthorizedHandler(() => {
 
 function AppRoot(): ReactElement {
   const { mode } = useTheme();
+  const reducedMotion = useReducedMotion();
 
   return (
-    <ConfigProvider locale={zhCN} theme={createAntdTheme(mode)}>
+    <ConfigProvider locale={zhCN} theme={createAntdTheme(mode, { reducedMotion })}>
       <AntdApp>
         {/* 全局兜底监听：必须位于 <AntdApp> 内部才能拿到真实 message 实例 */}
         <GlobalFeedbackBridge />

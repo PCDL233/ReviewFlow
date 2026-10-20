@@ -52,6 +52,7 @@
   --accent: var(--brand);
   --accent-soft: var(--brand-soft);
   position: relative;
+  height: 100%;
   overflow: hidden;
   border-radius: var(--radius-lg);
 }
@@ -63,6 +64,9 @@
   content: '';
 }
 .stat-card .ant-card-body {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
   padding: 17px 18px 16px 21px;
 }
 .stat-card-head {
@@ -106,7 +110,8 @@
   font-size: 16px;
 }
 .stat-caption {
-  margin-top: 7px;
+  margin-top: auto;
+  padding-top: 7px;
   color: var(--faint);
   font-size: 11px;
   line-height: 1.55;

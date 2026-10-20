@@ -212,6 +212,27 @@ export function reviewExportUrl(reviewId: string, format: 'markdown' | 'html' | 
   return `${API_BASE}/reviews/${encodeURIComponent(reviewId)}/export?format=${format}`;
 }
 
+export type ReviewExportFormat = 'markdown' | 'html' | 'json';
+
+/**
+ * 读取导出内容（导出端点返回原始文本/HTML，不走 JSON 契约校验）。
+ * 供"复制 Markdown""打印为 PDF"等需要在页面内直接使用报告文本的场景调用。
+ */
+export async function fetchReviewExport(
+  reviewId: string,
+  format: ReviewExportFormat,
+): Promise<string> {
+  const response = await fetch(reviewExportUrl(reviewId, format));
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    const prefix = response.status === 404 ? '审查记录不存在' : '导出失败';
+    throw new ApiError(detail === '' ? prefix : `${prefix}：${detail}`, {
+      status: response.status,
+    });
+  }
+  return response.text();
+}
+
 /** 配置响应体：可编辑配置 + 服务端只读运行环境（两者来自同一次 GET）。 */
 export type AdminConfigPayload = { config: AdminConfig; runtime: ServerRuntime };
 

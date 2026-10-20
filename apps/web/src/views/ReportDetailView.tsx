@@ -22,10 +22,13 @@ import {
   CopyOutlined,
   DeleteOutlined,
   DownloadOutlined,
+  FileTextOutlined,
   MoreOutlined,
+  PrinterOutlined,
   ReloadOutlined,
   SearchOutlined,
 } from '@ant-design/icons';
+import type { MenuProps } from 'antd';
 import type { AgentDimension, Severity } from '@ai-review/shared';
 import type { IdentifiedFinding, ReviewReportDetail } from '@ai-review/shared/api';
 import { FalsePositiveSwitch } from '../components/FalsePositiveSwitch';
@@ -34,9 +37,11 @@ import {
   deleteReview,
   fetchReviewDetail,
   fetchReviewDiff,
+  fetchReviewExport,
   rerunReview,
   reviewExportUrl,
 } from '../api';
+import { openReportWindow, printReportInto } from '../lib/report-export';
 import { CardHeading, PageHeader } from '../components/PageHeader';
 import { ErrorAlert } from '../components/ErrorAlert';
 import { EmptyState } from '../components/EmptyState';
@@ -79,7 +84,7 @@ function severityCount(detail: ReviewReportDetail, severity: Severity): number {
 
 /** 审查报告详情：概览 / 发现 / Diff 三个视图。 */
 export function ReportDetailView(props: { reviewId: string; onBack: () => void }): ReactElement {
-  const { message } = App.useApp();
+  const { message, modal } = App.useApp();
   const { notifyError } = useNotify();
   const queryClient = useQueryClient();
   const [severityFilter, setSeverityFilter] = useState<Severity | 'ALL'>('ALL');
@@ -113,8 +118,48 @@ export function ReportDetailView(props: { reviewId: string; onBack: () => void }
     },
     onError: (error) => notifyError(error, { title: '删除失败' }),
   });
+  const [exporting, setExporting] = useState<'markdown' | 'print' | null>(null);
 
-  const { modal } = App.useApp();
+  /** 复制 Markdown 源文本，便于直接粘进 PR / 文档。 */
+  const handleCopyMarkdown = async (): Promise<void> => {
+    setExporting('markdown');
+    try {
+      const markdown = await fetchReviewExport(props.reviewId, 'markdown');
+      await navigator.clipboard.writeText(markdown);
+      void message.success('Markdown 已复制到剪贴板');
+    } catch (error) {
+      notifyError(error, { title: '复制 Markdown 失败' });
+    } finally {
+      setExporting(null);
+    }
+  };
+
+  /**
+   * 打印 / 另存为 PDF。
+   * 新窗口必须在点击手势内同步打开，异步取回 HTML 后再 open 会被浏览器拦截。
+   */
+  const handlePrint = async (): Promise<void> => {
+    const win = openReportWindow();
+    if (win === null) {
+      void message.error('浏览器阻止了新窗口，请允许弹窗后重试');
+      return;
+    }
+    setExporting('print');
+    try {
+      const html = await fetchReviewExport(props.reviewId, 'html');
+      printReportInto(win, html);
+    } catch (error) {
+      win.close();
+      notifyError(error, { title: '打印失败' });
+    } finally {
+      setExporting(null);
+    }
+  };
+
+  const handleExportMenuClick: MenuProps['onClick'] = ({ key }) => {
+    if (key === 'copy-markdown') void handleCopyMarkdown();
+    if (key === 'print') void handlePrint();
+  };
 
   if (detailQuery.isPending) return <PageSkeleton rows={10} />;
   if (detailQuery.isError) {
@@ -383,10 +428,20 @@ export function ReportDetailView(props: { reviewId: string; onBack: () => void }
               </Button>
               <Dropdown
                 trigger={['click']}
+                placement="bottomRight"
                 menu={{
                   items: [
                     {
+                      key: 'copy-markdown',
+                      // 图标用图标组件而非裸字符，保证与菜单其他项对齐
+                      icon: <CopyOutlined />,
+                      label: exporting === 'markdown' ? '正在复制…' : '复制 Markdown',
+                      disabled: exporting !== null,
+                    },
+                    { type: 'divider' },
+                    {
                       key: 'html',
+                      icon: <DownloadOutlined />,
                       label: (
                         <a
                           href={reviewExportUrl(props.reviewId, 'html')}
@@ -399,6 +454,7 @@ export function ReportDetailView(props: { reviewId: string; onBack: () => void }
                     },
                     {
                       key: 'json',
+                      icon: <FileTextOutlined />,
                       label: (
                         <a
                           href={reviewExportUrl(props.reviewId, 'json')}
@@ -409,10 +465,22 @@ export function ReportDetailView(props: { reviewId: string; onBack: () => void }
                         </a>
                       ),
                     },
+                    { type: 'divider' },
+                    {
+                      key: 'print',
+                      icon: <PrinterOutlined />,
+                      label: exporting === 'print' ? '正在准备打印…' : '打印 / 另存为 PDF',
+                      disabled: exporting !== null,
+                    },
                   ],
+                  onClick: handleExportMenuClick,
                 }}
               >
-                <Button icon={<MoreOutlined />} aria-label="更多导出格式" />
+                <Button
+                  icon={<MoreOutlined />}
+                  aria-label="更多导出格式"
+                  loading={exporting !== null}
+                />
               </Dropdown>
             </Space.Compact>
             <Button

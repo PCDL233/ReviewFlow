@@ -18,6 +18,14 @@ const LIGHT = {
   success: '#059669',
   warning: '#d97706',
   error: '#dc2626',
+  infoBg: '#eff6ff',
+  infoBorder: '#bfdbfe',
+  successBg: '#ecfdf5',
+  successBorder: '#a7f3d0',
+  warningBg: '#fffbeb',
+  warningBorder: '#fde68a',
+  errorBg: '#fef2f2',
+  errorBorder: '#fecaca',
   ink: '#0f172a',
   inkSecondary: '#475569',
   inkTertiary: '#94a3b8',
@@ -41,6 +49,14 @@ const DARK = {
   success: '#34d399',
   warning: '#fbbf24',
   error: '#f87171',
+  infoBg: '#172554',
+  infoBorder: '#1e3a8a',
+  successBg: '#052e1b',
+  successBorder: '#0f5c3f',
+  warningBg: '#3a2a0a',
+  warningBorder: '#6b4d12',
+  errorBg: '#3b1114',
+  errorBorder: '#7f1d1d',
   ink: '#f1f5f9',
   inkSecondary: '#cbd5e1',
   inkTertiary: '#94a3b8',
@@ -57,7 +73,16 @@ const DARK = {
   tooltip: '#020617',
 } as const;
 
-export function createAntdTheme(mode: ThemeMode): ThemeConfig {
+export type AntdThemeOptions = {
+  /**
+   * 用户系统设置开启了「减少动态效果」时为 true。
+   * 通过 antd 的 motion token 关闭动画（rc-motion 会走无动画分支），
+   * 而不是用 CSS 把时长压到 0——后者会让弹层错过 animationend，永远停在屏外。
+   */
+  reducedMotion?: boolean;
+};
+
+export function createAntdTheme(mode: ThemeMode, options: AntdThemeOptions = {}): ThemeConfig {
   const isDark = mode === 'dark';
   const palette = isDark ? DARK : LIGHT;
 
@@ -69,6 +94,17 @@ export function createAntdTheme(mode: ThemeMode): ThemeConfig {
       colorSuccess: palette.success,
       colorWarning: palette.warning,
       colorError: palette.error,
+      // seed 色由 antd 派生 10 阶色板，其 [1] 阶（*Bg）会明显偏灰绿；
+      // 这里显式覆盖语义背景/描边，使 tag / alert / progress 与设计变量一致。
+      colorInfoBg: palette.infoBg,
+      colorInfoBorder: palette.infoBorder,
+      colorSuccessBg: palette.successBg,
+      colorSuccessBorder: palette.successBorder,
+      colorWarningBg: palette.warningBg,
+      colorWarningBorder: palette.warningBorder,
+      colorErrorBg: palette.errorBg,
+      colorErrorBorder: palette.errorBorder,
+      motion: options.reducedMotion !== true,
       colorLink: palette.brand,
       colorText: palette.ink,
       colorTextSecondary: palette.inkSecondary,

@@ -133,12 +133,12 @@ button {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+  /*
+   * 只关掉平滑滚动。动画/过渡时长一律交给 antd 的 motion token 与组件自身处理：
+   * 用 * { animation-duration: 0.01ms } 强行压时长会让 rc-motion 的
+   * animationend 早于监听注册，弹层永久停在屏外并反复重对齐（下拉不出现 + 闪动）。
+   */
+  html {
     scroll-behavior: auto !important;
   }
 }

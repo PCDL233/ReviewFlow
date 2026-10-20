@@ -78,9 +78,9 @@ describe('parse-response unified error plumbing', () => {
     await expect(
       parseResponse(AnySchema, new Response('{"error":"x"}', { status: 413 })),
     ).rejects.toThrow('请求体过大：x');
-    await expect(
-      parseResponse(AnySchema, new Response('', { status: 503 })),
-    ).rejects.toThrow('服务暂不可用');
+    await expect(parseResponse(AnySchema, new Response('', { status: 503 }))).rejects.toThrow(
+      '服务暂不可用',
+    );
     // 401 会话过期：服务端 detail 与前缀一致时不重复拼接
     await expect(
       parseResponse(AnySchema, new Response('{"error":"登录已失效，请重新登录"}', { status: 401 })),
@@ -89,11 +89,9 @@ describe('parse-response unified error plumbing', () => {
 
   it('supports per-call status message overrides', async () => {
     await expect(
-      parseResponse(
-        AnySchema,
-        new Response('{"error":"bad"}', { status: 409 }),
-        { statusMessages: { 409: '用户名已被占用，请更换一个' } },
-      ),
+      parseResponse(AnySchema, new Response('{"error":"bad"}', { status: 409 }), {
+        statusMessages: { 409: '用户名已被占用，请更换一个' },
+      }),
     ).rejects.toThrow('用户名已被占用，请更换一个：bad');
   });
 

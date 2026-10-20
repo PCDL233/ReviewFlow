@@ -1,94 +1,110 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import type { ReactElement } from 'react';
 import { useNavigate } from '@tanstack/react-router';
-import { Button, Card, Form, Input, Typography } from 'antd';
+import { LockOutlined, UserOutlined } from '@ant-design/icons';
+import { Alert, Button, Form, Input, Typography } from 'antd';
 import type { LoginInput } from '@ai-review/shared/api';
 import { useAuth, useLogin } from '../hooks/use-auth';
-import { useNotify } from '../hooks/use-notify';
-import { BrandMark } from '../components/Brand';
+import { getErrorMessage } from '../parse-response';
+import { safeRedirectTarget } from '../lib/redirect';
+import { AuthShell } from '../components/AuthShell';
 
 export type LoginPageProps = { redirect?: string };
-
-function safeRedirectTarget(redirect: string | undefined): string {
-  return redirect !== undefined && redirect.startsWith('/') ? redirect : '/';
-}
 
 export function LoginPage(props: LoginPageProps): ReactElement {
   const { user } = useAuth();
   const navigate = useNavigate();
   const loginMutation = useLogin();
-  const { notifyError } = useNotify();
+  const [formError, setFormError] = useState<string | undefined>(undefined);
 
   useEffect(() => {
-    if (user !== null) void navigate({ to: '/', replace: true });
-  }, [user, navigate]);
+    if (user !== null) {
+      void navigate({ to: safeRedirectTarget(props.redirect), replace: true });
+    }
+  }, [user, navigate, props.redirect]);
 
   const handleFinish = async (values: LoginInput): Promise<void> => {
+    setFormError(undefined);
     try {
       await loginMutation.mutateAsync(values);
       await navigate({ to: safeRedirectTarget(props.redirect), replace: true });
-    } catch (e) {
-      notifyError(e, { title: '登录失败' });
+    } catch (error) {
+      setFormError(getErrorMessage(error));
     }
   };
 
   return (
-    <div className="auth-shell">
-      <section className="auth-visual">
-        <div className="auth-brand">
-          <BrandMark />
-          <div>
-            <div className="auth-brand-title">ReviewFlow</div>
-            <div className="app-brand-subtitle">CODE REVIEW CONSOLE</div>
-          </div>
-        </div>
-        <div className="auth-visual-copy">
-          <h1 className="auth-visual-title">
-            让代码质量
-            <br />
-            成为团队的共识。
-          </h1>
-          <p className="auth-visual-description">
-            从一次提交，到整个团队的工程质量，我们用更清晰的洞察，帮助你把时间花在真正重要的地方。
-          </p>
-        </div>
-        <div className="auth-quote">Built for thoughtful engineering teams · 2026</div>
-      </section>
-      <section className="auth-form-side">
-        <Card className="auth-card">
-          <Typography.Title level={2} className="auth-form-title">
-            欢迎回来
-          </Typography.Title>
-          <Typography.Paragraph className="auth-form-subtitle">
-            登录你的 ReviewFlow 工作区，继续查看团队代码质量。
-          </Typography.Paragraph>
-          <Form<LoginInput> layout="vertical" onFinish={(values) => void handleFinish(values)}>
-            <Form.Item
-              label="用户名"
-              name="username"
-              rules={[{ required: true, message: '请输入用户名' }]}
-            >
-              <Input placeholder="例如：zhangsan" autoComplete="username" />
-            </Form.Item>
-            <Form.Item
-              label="密码"
-              name="password"
-              rules={[{ required: true, message: '请输入密码' }]}
-            >
-              <Input.Password placeholder="输入登录密码" autoComplete="current-password" />
-            </Form.Item>
-            <Button type="primary" htmlType="submit" block loading={loginMutation.isPending}>
-              登录
-            </Button>
-          </Form>
-          <Typography.Paragraph className="auth-footnote">
-            还没有账号？{' '}
-            <Typography.Link onClick={() => void navigate({ to: '/register' })}>
-              去注册
-            </Typography.Link>
-          </Typography.Paragraph>
-        </Card>
-      </section>
-    </div>
+    <AuthShell
+      mode="login"
+      title="欢迎回来"
+      subtitle="登录你的 ReviewFlow 工作区，继续查看团队代码质量。"
+      error={
+        formError === undefined ? undefined : (
+          <Alert
+            type="error"
+            showIcon
+            closable
+            title="登录失败"
+            description={formError}
+            onClose={() => setFormError(undefined)}
+          />
+        )
+      }
+      footer={
+        <Typography.Paragraph className="auth-switch">
+          还没有账号？{' '}
+          <Typography.Link
+            onClick={() =>
+              void navigate({
+                to: '/register',
+                search: props.redirect === undefined ? {} : { redirect: props.redirect },
+              })
+            }
+          >
+            创建新工作区
+          </Typography.Link>
+        </Typography.Paragraph>
+      }
+    >
+      <Form<LoginInput>
+        className="auth-form"
+        layout="vertical"
+        requiredMark={false}
+        onFinish={(values) => void handleFinish(values)}
+      >
+        <Form.Item
+          label="用户名"
+          name="username"
+          rules={[{ required: true, message: '请输入用户名' }]}
+        >
+          <Input
+            size="large"
+            autoFocus
+            prefix={<UserOutlined />}
+            placeholder="例如：zhangsan"
+            autoComplete="username"
+          />
+        </Form.Item>
+        <Form.Item label="密码" name="password" rules={[{ required: true, message: '请输入密码' }]}>
+          <Input.Password
+            size="large"
+            prefix={<LockOutlined />}
+            placeholder="输入登录密码"
+            autoComplete="current-password"
+          />
+        </Form.Item>
+        <Button
+          className="auth-submit"
+          type="primary"
+          size="large"
+          htmlType="submit"
+          block
+          loading={loginMutation.isPending}
+        >
+          {loginMutation.isPending ? '正在登录…' : '登录'}
+        </Button>
+        <p className="auth-form-hint">登录状态会保留 7 天；退出登录后需重新验证密码。</p>
+      </Form>
+    </AuthShell>
   );
 }

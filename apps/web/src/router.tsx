@@ -9,13 +9,14 @@ import {
 import { lazy } from 'react';
 import type { ReactElement } from 'react';
 import type { QueryClient } from '@tanstack/react-query';
-import { Button, Result, Space, Spin } from 'antd';
 import type { User } from '@ai-review/shared/api';
 import { fetchMe } from './api/auth';
-import { getErrorMessage } from './parse-response';
 import { AUTH_QUERY_KEY } from './hooks/use-auth';
 import { canAccessPath, firstPermittedAdminPath, hasAdminAccess } from './permissions';
 import { queryClient } from './query-client';
+import { NotFoundPage, RouteErrorState, RouteLoading } from './components/RouteState';
+import { parseReviewSearch, serializeReviewSearch } from './lib/search-params';
+import type { ReviewSearch } from './lib/search-params';
 import { AdminLayout } from './layouts/AdminLayout';
 import { UserLayout } from './layouts/UserLayout';
 import { HomePage } from './pages/HomePage';
@@ -163,7 +164,7 @@ function RunRoute(): ReactElement {
   const navigate = useNavigate();
   return (
     <RunReviewView
-      onCompleted={(reviewId) => {
+      onOpenReport={(reviewId) => {
         if (reviewId !== '') {
           void navigate({ to: '/reviews/$reviewId', params: { reviewId } });
         }
@@ -175,13 +176,20 @@ function RunRoute(): ReactElement {
 const reviewsRoute = createRoute({
   getParentRoute: () => userRoute,
   path: '/reviews',
+  // 筛选与分页全部由 URL 承载：刷新 / 后退 / 分享链接可复现同一视图
+  validateSearch: (search: Record<string, unknown>): ReviewSearch => parseReviewSearch(search),
   component: ReviewsRoute,
 });
 
 function ReviewsRoute(): ReactElement {
   const navigate = useNavigate();
+  const search = reviewsRoute.useSearch();
   return (
     <ReviewListView
+      search={search}
+      onSearchChange={(next) =>
+        void navigate({ to: '/reviews', search: serializeReviewSearch(next), replace: true })
+      }
       onOpen={(reviewId) => void navigate({ to: '/reviews/$reviewId', params: { reviewId } })}
     />
   );
@@ -316,28 +324,12 @@ const adminKnowledgeRoute = createRoute({
 });
 
 function NotFound(): ReactElement {
-  return <div>404：页面不存在</div>;
+  return <NotFoundPage />;
 }
 
 /** 路由级错误兜底：懒加载分包失败、beforeLoad 异常等统一呈现，避免白屏 */
 function RouteErrorFallback({ error }: { error: unknown }): ReactElement {
-  return (
-    <div className="route-error-fallback" style={{ maxWidth: 640, margin: '0 auto', padding: 64 }}>
-      <Result
-        status="error"
-        title="页面加载失败"
-        subTitle={getErrorMessage(error)}
-        extra={
-          <Space>
-            <Button type="primary" onClick={() => window.location.reload()}>
-              刷新重试
-            </Button>
-            <Button onClick={() => window.history.back()}>返回上一页</Button>
-          </Space>
-        }
-      />
-    </div>
-  );
+  return <RouteErrorState error={error} />;
 }
 
 export const routeTree = rootRoute.addChildren([
@@ -371,17 +363,11 @@ export const routeTree = rootRoute.addChildren([
 export const router = createRouter({
   routeTree,
   context: { queryClient },
-  defaultPendingComponent: PendingFallback,
+  defaultPendingComponent: RouteLoading,
   defaultErrorComponent: RouteErrorFallback,
+  defaultPreload: 'intent',
+  scrollRestoration: true,
 });
-
-function PendingFallback(): ReactElement {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'center', padding: 64 }}>
-      <Spin tip="加载中…" />
-    </div>
-  );
-}
 
 // 渲染期补上 queryClient（保持 createRouter 的类型签名简单）
 declare module '@tanstack/react-router' {

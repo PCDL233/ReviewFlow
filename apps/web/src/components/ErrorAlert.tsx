@@ -28,7 +28,7 @@ export function ErrorAlert(props: ErrorAlertProps): ReactElement {
     <Alert
       type="error"
       showIcon
-      message={title ?? '操作失败'}
+      title={title ?? '操作失败'}
       description={description ?? getErrorMessage(error)}
       action={
         onRetry !== undefined ? (

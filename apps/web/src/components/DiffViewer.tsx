@@ -1,128 +1,196 @@
+import { useState } from 'react';
 import type { ReactElement } from 'react';
-import { Alert, Empty, Space, Tag, Typography } from 'antd';
+import { Button, Space, Switch, Tag, Tooltip, Typography } from 'antd';
+import { DownOutlined, RightOutlined } from '@ant-design/icons';
 import type { IdentifiedFinding } from '@ai-review/shared/api';
+import { diffStats, isLineInRanges, parseUnifiedDiff } from '../lib/diff';
+import type { DiffFile, LineRange } from '../lib/diff';
+import { EmptyState } from './EmptyState';
 
-type DiffViewerProps = {
+export type DiffViewerProps = {
   diffText: string | null;
   findings: IdentifiedFinding[];
 };
 
-type DiffRow = {
-  key: string;
-  text: string;
-  oldLine: number | undefined;
-  newLine: number | undefined;
-  kind: 'add' | 'remove' | 'context' | 'meta';
-  path: string | undefined;
-};
-
-function normalizePath(value: string): string {
-  return value.replace(/^a\//, '').replace(/^b\//, '');
-}
-
-function parseDiff(diffText: string): DiffRow[] {
-  let oldLine: number | undefined;
-  let newLine: number | undefined;
-  let path: string | undefined;
-  return diffText.split(/\r?\n/).map((text, index) => {
-    if (text.startsWith('+++ ')) {
-      path = normalizePath(text.slice(4).trim());
-    }
-    const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(text);
-    if (hunk !== null) {
-      oldLine = Number(hunk[1]);
-      newLine = Number(hunk[2]);
-      return { key: String(index), text, oldLine, newLine, kind: 'meta', path };
-    }
-    if (text.startsWith('+') && !text.startsWith('+++')) {
-      const row = { key: String(index), text, oldLine, newLine, kind: 'add' as const, path };
-      if (newLine !== undefined) newLine += 1;
-      return row;
-    }
-    if (text.startsWith('-') && !text.startsWith('---')) {
-      const row = { key: String(index), text, oldLine, newLine, kind: 'remove' as const, path };
-      if (oldLine !== undefined) oldLine += 1;
-      return row;
-    }
-    if (text.startsWith(' ')) {
-      const row = { key: String(index), text, oldLine, newLine, kind: 'context' as const, path };
-      if (oldLine !== undefined) oldLine += 1;
-      if (newLine !== undefined) newLine += 1;
-      return row;
-    }
-    return { key: String(index), text, oldLine, newLine, kind: 'meta' as const, path };
-  });
-}
-
-/** 单列 unified diff：每行只显示一个行号（新增/上下文为新文件行号，删除为旧文件行号，元行为空） */
-function rowLineNumber(row: DiffRow): number | undefined {
-  switch (row.kind) {
-    case 'remove':
-      return row.oldLine;
-    case 'add':
-    case 'context':
-      return row.newLine;
-    default:
-      return undefined;
+function rangesByFile(findings: readonly IdentifiedFinding[]): Map<string, LineRange[]> {
+  const map = new Map<string, LineRange[]>();
+  for (const finding of findings) {
+    const key = finding.filePath.replace(/\\/g, '/');
+    const ranges = map.get(key) ?? [];
+    ranges.push({ start: finding.lineStart, end: finding.lineEnd });
+    map.set(key, ranges);
   }
+  return map;
 }
 
-function rowMatchesFinding(row: DiffRow, findings: IdentifiedFinding[]): boolean {
-  if (row.path === undefined || row.newLine === undefined) return false;
-  const path = normalizePath(row.path);
-  return findings.some(
-    (finding) =>
-      normalizePath(finding.filePath) === path &&
-      row.newLine !== undefined &&
-      row.newLine >= finding.lineStart &&
-      row.newLine <= finding.lineEnd,
-  );
+function findFileRanges(file: DiffFile, index: Map<string, LineRange[]>): LineRange[] {
+  const direct = index.get(file.path) ?? index.get(file.oldPath);
+  return direct ?? [];
 }
 
+/** 基于统一 diff 的代码差异视图：文件分组、双行号、问题行标记与折叠。 */
 export function DiffViewer(props: DiffViewerProps): ReactElement {
+  // React Compiler 会缓存该派生结果，无需手写 useMemo
+  const files = parseUnifiedDiff(props.diffText);
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
+  const [wrap, setWrap] = useState(false);
+  const [onlyIssues, setOnlyIssues] = useState(false);
+
   if (props.diffText === null || props.diffText.trim() === '') {
     return (
-      <Empty
-        image={Empty.PRESENTED_IMAGE_SIMPLE}
-        description="暂无可用的 Diff（存量记录可能未持久化原始变更）"
+      <EmptyState
+        title="这份报告没有可用的 diff"
+        description="审查记录可能来自 CLI 直跑，或该提交未产生文本差异。"
       />
     );
   }
-  const rows = parseDiff(props.diffText);
+  if (files.length === 0) {
+    return (
+      <EmptyState
+        title="无法解析 diff 内容"
+        description="差异可能不是标准 unified diff 格式，请下载原始报告查看。"
+      />
+    );
+  }
+
+  const index = rangesByFile(props.findings);
+  const filesWithIssues = files.filter((file) => findFileRanges(file, index).length > 0);
+  const visibleFiles = onlyIssues ? filesWithIssues : files;
+  const stats = diffStats(files);
+
+  const toggle = (path: string): void => {
+    setCollapsed((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
   return (
-    <div className="diff-viewer" role="region" aria-label="代码变更 Diff">
+    <div className="diff-viewer">
       <div className="diff-toolbar">
-        <Space size={8} wrap>
-          <Typography.Text type="secondary">
-            共 {rows.filter((row) => row.kind !== 'meta').length} 行变更
+        <Space wrap size={12}>
+          <Typography.Text strong>
+            {files.length} 个文件
+            <span className="diff-stat-add"> +{stats.additions}</span>
+            <span className="diff-stat-del"> −{stats.deletions}</span>
           </Typography.Text>
-          <Tag color="success">新增</Tag>
-          <Tag color="error">删除</Tag>
-          {props.findings.length > 0 ? <Tag color="warning">标记问题位置</Tag> : null}
+          <Space size={6}>
+            <Switch size="small" checked={wrap} onChange={setWrap} aria-label="自动换行" />
+            <Typography.Text type="secondary">自动换行</Typography.Text>
+          </Space>
+          <Space size={6}>
+            <Switch
+              size="small"
+              checked={onlyIssues}
+              onChange={setOnlyIssues}
+              aria-label="仅看含问题的文件"
+            />
+            <Typography.Text type="secondary">仅看含问题的文件</Typography.Text>
+          </Space>
+        </Space>
+        <Space>
+          <Button size="small" onClick={() => setCollapsed(new Set())}>
+            全部展开
+          </Button>
+          <Button size="small" onClick={() => setCollapsed(new Set(files.map((f) => f.path)))}>
+            全部折叠
+          </Button>
         </Space>
       </div>
-      <div className="diff-code">
-        {rows.map((row) => {
-          const finding = rowMatchesFinding(row, props.findings);
-          return (
-            <div
-              key={row.key}
-              className={`diff-row diff-row-${row.kind}${finding ? ' diff-row-finding' : ''}`}
-            >
-              <span className="diff-line-number">{rowLineNumber(row) ?? ''}</span>
-              <code className="diff-line-text">{row.text || ' '}</code>
-            </div>
-          );
-        })}
-      </div>
-      {props.findings.length > 0 ? (
-        <Alert
-          className="diff-hint"
-          type="info"
-          showIcon
-          message="Diff 中的黄色标记对应报告中的发现位置"
+
+      {onlyIssues && visibleFiles.length === 0 ? (
+        <EmptyState
+          title="已开启「仅看含问题的文件」"
+          description="当前 diff 中没有与发现关联的文件。"
         />
       ) : null}
+
+      {visibleFiles.map((file) => {
+        const ranges = findFileRanges(file, index);
+        const isCollapsed = collapsed.has(file.path);
+        return (
+          <section className="diff-file" key={file.path}>
+            <header className="diff-file-head">
+              <button
+                type="button"
+                className="diff-file-toggle"
+                onClick={() => toggle(file.path)}
+                aria-expanded={!isCollapsed}
+              >
+                {isCollapsed ? <RightOutlined /> : <DownOutlined />}
+                <span className="diff-file-path">{file.path}</span>
+              </button>
+              <Space size={6} wrap>
+                {file.isNew ? <Tag color="green">新增文件</Tag> : null}
+                {file.isDeleted ? <Tag color="red">删除文件</Tag> : null}
+                {file.isBinary ? <Tag>二进制</Tag> : null}
+                {ranges.length > 0 ? <Tag color="warning">{ranges.length} 处问题</Tag> : null}
+                <span className="diff-stat-add">+{file.additions}</span>
+                <span className="diff-stat-del">−{file.deletions}</span>
+              </Space>
+            </header>
+            {isCollapsed ? null : file.isBinary ? (
+              <div className="diff-empty">二进制文件不展示逐行差异。</div>
+            ) : (
+              <div className={`diff-body${wrap ? ' is-wrap' : ''}`}>
+                {file.hunks.map((hunk) => (
+                  <div className="diff-hunk" key={`${file.path}:${hunk.header}`}>
+                    <div className="diff-hunk-head">{hunk.header}</div>
+                    <table className="diff-table">
+                      <tbody>
+                        {hunk.lines.map((line, lineIndex) => {
+                          const flagged =
+                            line.newLine !== null && isLineInRanges(line.newLine, ranges);
+                          const related = flagged
+                            ? props.findings.filter(
+                                (finding) =>
+                                  finding.filePath.replace(/\\/g, '/') === file.path &&
+                                  line.newLine !== null &&
+                                  line.newLine >= finding.lineStart &&
+                                  line.newLine <= finding.lineEnd,
+                              )
+                            : [];
+                          const className = [
+                            'diff-line',
+                            `diff-line-${line.kind}`,
+                            flagged ? 'is-flagged' : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' ');
+                          const marker = related.length > 0;
+                          return (
+                            <tr className={className} key={`${hunk.header}:${lineIndex}`}>
+                              <td className="diff-gutter diff-gutter-old">{line.oldLine ?? ''}</td>
+                              <td className="diff-gutter diff-gutter-new">
+                                {line.newLine ?? ''}
+                                {marker ? (
+                                  <Tooltip
+                                    title={related
+                                      .map((finding) => `${finding.severity}：${finding.title}`)
+                                      .join('；')}
+                                  >
+                                    <span
+                                      className={`diff-flag-dot severity-${related[0]?.severity.toLowerCase() ?? 'warning'}`}
+                                      aria-label="此处存在问题"
+                                    />
+                                  </Tooltip>
+                                ) : null}
+                              </td>
+                              <td className="diff-code">{line.text === '' ? ' ' : line.text}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+        );
+      })}
     </div>
   );
 }

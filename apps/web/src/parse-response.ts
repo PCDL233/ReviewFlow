@@ -89,7 +89,8 @@ export async function parseResponse<T>(
       503: '服务暂不可用',
     };
     const prefix =
-      (options?.statusMessages?.[response.status] ?? statusMessage[response.status]) ??
+      options?.statusMessages?.[response.status] ??
+      statusMessage[response.status] ??
       `请求失败（${response.status}）`;
     // 服务端 detail 与状态前缀一致（如 401 会话过期、413 请求体过大）时不重复拼接
     const message = detail === '' || detail === prefix ? prefix : `${prefix}：${detail}`;

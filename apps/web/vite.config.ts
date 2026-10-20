@@ -6,7 +6,8 @@ export default defineConfig({
   // plugin-react 6 为 oxc 内核，经 compiler 选项启用（需 oxc-transform-react）
   plugins: [react({ compiler: true })],
   // dev 期 API 转发到 Hono；生产由 Hono 同源托管静态产物，无需代理
-  server: { proxy: { '/api': 'http://localhost:8080' } },
+  // /metrics 是 Prometheus 文本端点（非 /api 前缀），管理端指标页直接请求
+  server: { proxy: { '/api': 'http://localhost:8080', '/metrics': 'http://localhost:8080' } },
   build: {
     rollupOptions: {
       output: {

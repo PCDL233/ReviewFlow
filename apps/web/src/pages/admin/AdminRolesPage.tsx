@@ -20,7 +20,9 @@ import { PlusOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import type { Role, RoleInput } from '@ai-review/shared/api';
 import { createRole, deleteRole, fetchRoles, updateRole } from '../../api/admin';
-import { CardHeading } from '../../components/PageHeader';
+import { CardHeading, PageHeader } from '../../components/PageHeader';
+import { ErrorAlert } from '../../components/ErrorAlert';
+import { EmptyState } from '../../components/EmptyState';
 import { useNotify } from '../../hooks/use-notify';
 import { ALL_ROUTE_PERMISSIONS } from '../../permissions';
 
@@ -141,26 +143,53 @@ export function AdminRolesPage(): ReactElement {
   ];
 
   return (
-    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Card className="surface-card data-table-card">
-        <div className="table-toolbar">
-          <Typography.Text type="secondary">
-            共 {rolesQuery.data?.length ?? 0} 个角色，权限即系统页面访问路径。
-          </Typography.Text>
+    <div className="page-stack">
+      <PageHeader
+        eyebrow="Admin / Roles"
+        title="角色管理"
+        description="权限即页面访问路径；多角色时按优先级取默认角色，权限取并集。"
+        extra={
           <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
             新增角色
           </Button>
-        </div>
-        <Table<Role>
-          rowKey="id"
-          size="middle"
-          loading={rolesQuery.isPending}
-          columns={columns}
-          dataSource={rolesQuery.data ?? []}
-          scroll={{ x: 900 }}
-          pagination={false}
+        }
+      />
+      {rolesQuery.isError ? (
+        <ErrorAlert
+          error={rolesQuery.error}
+          title="角色列表加载失败"
+          onRetry={() => void rolesQuery.refetch()}
         />
-      </Card>
+      ) : (
+        <Card className="surface-card data-table-card">
+          <div className="table-toolbar">
+            <Typography.Text type="secondary">
+              共 {rolesQuery.data?.length ?? 0} 个角色，权限即系统页面访问路径。
+            </Typography.Text>
+          </div>
+          {!rolesQuery.isPending && (rolesQuery.data ?? []).length === 0 ? (
+            <EmptyState
+              title="还没有自定义角色"
+              description="创建角色后可以为成员分配不同页面权限。"
+              action={
+                <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+                  新增角色
+                </Button>
+              }
+            />
+          ) : (
+            <Table<Role>
+              rowKey="id"
+              size="middle"
+              loading={rolesQuery.isPending}
+              columns={columns}
+              dataSource={rolesQuery.data ?? []}
+              scroll={{ x: 900 }}
+              pagination={false}
+            />
+          )}
+        </Card>
+      )}
 
       <Modal
         title={<CardHeading title={editing === null ? '新增角色' : '编辑角色'} />}
@@ -206,7 +235,7 @@ export function AdminRolesPage(): ReactElement {
             rules={[{ required: true, message: '请至少选择一个权限' }]}
           >
             <Checkbox.Group style={{ width: '100%' }}>
-              <Space direction="vertical" style={{ width: '100%' }}>
+              <Space orientation="vertical" style={{ width: '100%' }}>
                 {ALL_ROUTE_PERMISSIONS.filter((p) => p.group === 'user').map((p) => (
                   <Checkbox key={p.path} value={p.path}>
                     {p.label}
@@ -216,7 +245,7 @@ export function AdminRolesPage(): ReactElement {
               <Typography.Text type="secondary" style={{ display: 'block', margin: '12px 0 6px' }}>
                 管理后台
               </Typography.Text>
-              <Space direction="vertical" style={{ width: '100%' }}>
+              <Space orientation="vertical" style={{ width: '100%' }}>
                 {ALL_ROUTE_PERMISSIONS.filter((p) => p.group === 'admin').map((p) => (
                   <Checkbox key={p.path} value={p.path}>
                     {p.label}
@@ -227,7 +256,7 @@ export function AdminRolesPage(): ReactElement {
           </Form.Item>
         </Form>
       </Modal>
-    </Space>
+    </div>
   );
 }
 

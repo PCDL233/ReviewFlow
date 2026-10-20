@@ -23,7 +23,7 @@ import type {
   ReviewStats,
   ServerRuntime,
 } from '@ai-review/shared/api';
-import { parseResponse } from './parse-response.js';
+import { ApiError, parseResponse } from './parse-response.js';
 
 const API_BASE = '/api';
 type ReviewQueryOptions = {
@@ -146,21 +146,21 @@ export function reviewExportUrl(reviewId: string, format: 'markdown' | 'html' | 
   return `${API_BASE}/reviews/${encodeURIComponent(reviewId)}/export?format=${format}`;
 }
 
-export async function fetchAdminConfig(): Promise<AdminConfig> {
+/** 配置响应体：可编辑配置 + 服务端只读运行环境（两者来自同一次 GET）。 */
+export type AdminConfigPayload = { config: AdminConfig; runtime: ServerRuntime };
+
+/** 读取配置与运行环境：配置页需要同时展示两者，避免重复请求。 */
+export async function fetchAdminConfigPayload(): Promise<AdminConfigPayload> {
   const body = await parseResponse(
     AdminConfigResponseSchema,
     await fetch(`${API_BASE}/admin/config`),
   );
-  return body.config;
+  return { config: body.config, runtime: body.runtime };
 }
 
-/** 服务端运行环境只读信息（端口/DB 路径/静态目录/白名单生效值），供配置页展示 */
-export async function fetchServerRuntime(): Promise<ServerRuntime> {
-  const body = await parseResponse(
-    AdminConfigResponseSchema,
-    await fetch(`${API_BASE}/admin/config`),
-  );
-  return body.runtime;
+export async function fetchAdminConfig(): Promise<AdminConfig> {
+  const body = await fetchAdminConfigPayload();
+  return body.config;
 }
 
 export async function updateAdminConfig(config: AdminConfig): Promise<AdminConfig> {
@@ -242,6 +242,16 @@ export async function analyzeComplexity(
 
 export async function fetchHookScript(): Promise<string> {
   const response = await fetch(`${API_BASE}/admin/tools/hook-script`);
+  if (!response.ok) throw new ApiError(`获取 Hook 脚本失败（HTTP ${response.status}）`);
+  const text = await response.text();
+  if (text.trim() === '') throw new ApiError('Hook 脚本内容为空');
+  return text;
+}
+
+/** Prometheus 文本指标：非 200 时抛出可读错误，避免把错误页当成指标渲染。 */
+export async function fetchMetricsText(): Promise<string> {
+  const response = await fetch('/metrics');
+  if (!response.ok) throw new ApiError(`指标服务返回错误（HTTP ${response.status}）`);
   return response.text();
 }
 

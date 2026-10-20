@@ -48,7 +48,7 @@ describe('buildAdminMenu', () => {
     expect(menu.map((entry) => entry.key)).toEqual(['/admin/metrics']);
   });
 
-  it("持有 /admin 概览权限时（前缀授权）显示全部分组", () => {
+  it('持有 /admin 概览权限时（前缀授权）显示全部分组', () => {
     expect(buildAdminMenu(['/admin'])).toHaveLength(6);
   });
 

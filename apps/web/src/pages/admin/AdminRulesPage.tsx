@@ -6,6 +6,7 @@ import {
   Alert,
   Button,
   Card,
+  Drawer,
   Form,
   Input,
   Modal,
@@ -23,6 +24,7 @@ import type { CustomRule, CustomRuleTestResult } from '@ai-review/shared/api';
 import { CustomRuleSchema } from '@ai-review/shared/api';
 import { fetchCustomRules, testCustomRule, updateCustomRules } from '../../api/admin';
 import { CardHeading, PageHeader } from '../../components/PageHeader';
+import { EmptyState } from '../../components/EmptyState';
 import { ErrorAlert } from '../../components/ErrorAlert';
 import { useNotify } from '../../hooks/use-notify';
 
@@ -68,6 +70,7 @@ export function AdminRulesPage(): ReactElement {
   const [diffText, setDiffText] = useState('');
   const [sampleSource, setSampleSource] = useState('');
   const [testResult, setTestResult] = useState<CustomRuleTestResult | null>(null);
+  const [testOpen, setTestOpen] = useState(false);
 
   const rulesQuery = useQuery({ queryKey: ['admin', 'rules'], queryFn: fetchCustomRules });
   const rules = rulesQuery.data ?? [];
@@ -116,7 +119,11 @@ export function AdminRulesPage(): ReactElement {
 
   const openEdit = (rule: CustomRule): void => {
     setEditing(rule);
-    form.setFieldsValue({ ...rule, matchScope: [...rule.matchScope], filePatterns: [...rule.filePatterns] });
+    form.setFieldsValue({
+      ...rule,
+      matchScope: [...rule.matchScope],
+      filePatterns: [...rule.filePatterns],
+    });
     setOpen(true);
   };
 
@@ -248,43 +255,18 @@ export function AdminRulesPage(): ReactElement {
             dataSource={rules}
             scroll={{ x: 1000 }}
             pagination={false}
-            locale={{ emptyText: '尚未配置自定义规则，点击「新增规则」开始。' }}
           />
         </Card>
       )}
 
-      <Card className="surface-card" title={<CardHeading title="规则试跑" />}>
-        <Typography.Paragraph type="secondary">
-          选择一条规则，粘贴示例 diff（新增行）或示例源码，验证正则命中是否符合预期。
-        </Typography.Paragraph>
-        <Form layout="vertical">
-          <Form.Item label="规则">
-            <Select
-              placeholder="选择要测试的规则"
-              value={testRule?.name}
-              onChange={(name) => setTestRule(rules.find((rule) => rule.name === name) ?? null)}
-              options={rules.map((rule) => ({ label: rule.name, value: rule.name }))}
-              allowClear
-            />
-          </Form.Item>
-          <Space align="start" size="large" style={{ width: '100%' }} wrap>
-            <Form.Item label="示例 diff（新增行，前缀 +）" style={{ minWidth: 320, flex: 1 }}>
-              <Input.TextArea
-                rows={6}
-                value={diffText}
-                onChange={(e) => setDiffText(e.target.value)}
-                placeholder={'+ const timeout = setTimeout(done, 1000);\n+ todo("fix me later");'}
-              />
-            </Form.Item>
-            <Form.Item label="示例源码（文件全文 / 函数片段）" style={{ minWidth: 320, flex: 1 }}>
-              <Input.TextArea
-                rows={6}
-                value={sampleSource}
-                onChange={(e) => setSampleSource(e.target.value)}
-                placeholder={'function example() {\n  // TODO: clean up\n  console.log("debug");\n}'}
-              />
-            </Form.Item>
-          </Space>
+      <Drawer
+        className="rule-test-drawer"
+        title={<CardHeading title="规则试跑" />}
+        size={720}
+        open={testOpen}
+        onClose={() => setTestOpen(false)}
+        destroyOnHidden
+        extra={
           <Button
             type="primary"
             icon={<ExperimentOutlined />}
@@ -292,48 +274,115 @@ export function AdminRulesPage(): ReactElement {
             loading={testMutation.isPending}
             disabled={testRule === null}
           >
-            试跑
+            运行
           </Button>
-        </Form>
-        {testResult !== null && (
-          <div style={{ marginTop: 16 }}>
-            {testResult.matches.length === 0 ? (
-              <Alert type="success" showIcon message="未命中任何行" />
-            ) : (
-              <Table
-                rowKey={(row, index) => `${row.scope}-${row.line}-${String(index)}`}
-                size="small"
-                pagination={false}
-                dataSource={testResult.matches}
-                columns={[
-                  {
-                    title: '范围',
-                    dataIndex: 'scope',
-                    width: 100,
-                    render: (scope: string) => <Tag>{SCOPE_LABELS[scope] ?? scope}</Tag>,
-                  },
-                  {
-                    title: '行号',
-                    dataIndex: 'line',
-                    width: 90,
-                    render: (line: number) => (line === 0 ? '—' : line),
-                  },
-                  {
-                    title: '命中内容',
-                    dataIndex: 'text',
-                    ellipsis: true,
-                    render: (text: string) => (
-                      <Typography.Text code style={{ whiteSpace: 'pre-wrap' }}>
-                        {text}
-                      </Typography.Text>
-                    ),
-                  },
-                ]}
+        }
+      >
+        <Typography.Paragraph type="secondary">
+          选择一条规则，粘贴示例
+          diff（新增行）或示例源码，验证正则命中是否符合预期。试跑结果不会写入配置。
+        </Typography.Paragraph>
+        <Form layout="vertical">
+          <Form.Item label="规则">
+            <Select<string | undefined>
+              placeholder="选择要测试的规则"
+              value={testRule?.name}
+              onChange={(name?: string) => {
+                setTestRule(rules.find((rule) => rule.name === name) ?? null);
+                setTestResult(null);
+              }}
+              options={rules.map((rule) => ({ label: rule.name, value: rule.name }))}
+              allowClear
+            />
+          </Form.Item>
+          <Space align="start" size="middle" style={{ width: '100%' }} wrap>
+            <Form.Item label="示例 diff（新增行，前缀 +）" style={{ minWidth: 300, flex: 1 }}>
+              <Input.TextArea
+                rows={7}
+                value={diffText}
+                onChange={(e) => setDiffText(e.target.value)}
+                placeholder={'+ const timeout = setTimeout(done, 1000);\n+ todo("fix me later");'}
               />
-            )}
-          </div>
+            </Form.Item>
+            <Form.Item label="示例源码（文件全文 / 函数片段）" style={{ minWidth: 300, flex: 1 }}>
+              <Input.TextArea
+                rows={7}
+                value={sampleSource}
+                onChange={(e) => setSampleSource(e.target.value)}
+                placeholder={
+                  'function example() {\n  // TODO: clean up\n  console.log("debug");\n}'
+                }
+              />
+            </Form.Item>
+          </Space>
+        </Form>
+        <Space className="rule-test-presets" wrap>
+          <Typography.Text type="secondary">快速填入：</Typography.Text>
+          <Button
+            size="small"
+            onClick={() => {
+              setDiffText('+ // TODO: replace mocked value\n+ console.log(password);');
+              setTestResult(null);
+            }}
+          >
+            TODO / console.log
+          </Button>
+          <Button
+            size="small"
+            onClick={() => {
+              setDiffText('+ const token = "ghp_012345678901234567890123456789012345";');
+              setTestResult(null);
+            }}
+          >
+            疑似密钥
+          </Button>
+        </Space>
+        {testResult === null ? (
+          <EmptyState
+            title="尚未运行试跑"
+            description="选择规则并填入示例后点击「运行」，命中行会显示在下方。"
+          />
+        ) : testResult.matches.length === 0 ? (
+          <Alert
+            type="success"
+            showIcon
+            title="未命中任何行"
+            description="检查正则或对应范围的示例输入。"
+          />
+        ) : (
+          <Table
+            rowKey={(row, index) => `${row.scope}-${row.line}-${String(index)}`}
+            size="small"
+            pagination={false}
+            dataSource={testResult.matches}
+            columns={[
+              {
+                title: '范围',
+                dataIndex: 'scope',
+                width: 100,
+                render: (scope: string) => <Tag>{SCOPE_LABELS[scope] ?? scope}</Tag>,
+              },
+              {
+                title: '行号',
+                dataIndex: 'line',
+                width: 80,
+                render: (line: number) =>
+                  line === 0 ? '—' : <span className="numeric-cell">{line}</span>,
+              },
+              {
+                title: '命中内容',
+                dataIndex: 'text',
+                ellipsis: true,
+                render: (text: string) => (
+                  <Typography.Text code style={{ whiteSpace: 'pre-wrap' }}>
+                    {text}
+                  </Typography.Text>
+                ),
+              },
+            ]}
+          />
         )}
-      </Card>
+      </Drawer>
 
       <Modal
         title={<CardHeading title={editing === null ? '新增规则' : '编辑规则'} />}
@@ -381,7 +430,12 @@ export function AdminRulesPage(): ReactElement {
             >
               <Input placeholder="例如：\\bTODO\\b|\\bFIXME\\b" />
             </Form.Item>
-            <Form.Item label="正则 flag" name="flags" style={{ width: 140 }} rules={[{ validator: validateFlags }]}>
+            <Form.Item
+              label="正则 flag"
+              name="flags"
+              style={{ width: 140 }}
+              rules={[{ validator: validateFlags }]}
+            >
               <Input placeholder="如 i（忽略大小写）" maxLength={8} />
             </Form.Item>
           </Space>
@@ -408,11 +462,7 @@ export function AdminRulesPage(): ReactElement {
             <Input placeholder="例如：检测到遗留的 TODO 标记" maxLength={120} />
           </Form.Item>
           <Form.Item label="修复建议" name="suggestion">
-            <Input.TextArea
-              placeholder="命中的修复指引（可选）"
-              rows={2}
-              maxLength={500}
-            />
+            <Input.TextArea placeholder="命中的修复指引（可选）" rows={2} maxLength={500} />
           </Form.Item>
           <Form.Item
             label="匹配范围"
@@ -434,12 +484,7 @@ export function AdminRulesPage(): ReactElement {
             name="filePatterns"
             extra="按 glob 过滤文件路径，留空表示匹配全部文件。"
           >
-            <Select
-              mode="tags"
-              placeholder="例如：src/**、*.ts"
-              open={false}
-              suffixIcon={null}
-            />
+            <Select mode="tags" placeholder="例如：src/**、*.ts" open={false} suffixIcon={null} />
           </Form.Item>
           <Form.Item label="启用" name="enabled" valuePropName="checked">
             <Switch />

@@ -1,98 +1,129 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useState } from 'react';
 import type { ReactElement } from 'react';
-import { Card, Skeleton, Table, Tag, Typography } from 'antd';
+import { useQuery } from '@tanstack/react-query';
+import {
+  Button,
+  Card,
+  Col,
+  Input,
+  Row,
+  Segmented,
+  Skeleton,
+  Space,
+  Table,
+  Tag,
+  Typography,
+} from 'antd';
+import { ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import { fetchMetricsText } from '../../api';
+import { parseMetrics, summarizeMetrics, type MetricRow } from '../../lib/metrics';
 import { CardHeading, PageHeader } from '../../components/PageHeader';
 import { ErrorAlert } from '../../components/ErrorAlert';
+import { CodeBlock } from '../../components/CodeBlock';
+import { EmptyState } from '../../components/EmptyState';
 
-type MetricRow = {
-  name: string;
-  type: string;
-  labels: Record<string, string>;
-  value: string;
-  help?: string;
+type RefreshKey = 'off' | '5s' | '15s';
+
+const REFRESH_INTERVAL_MS: Record<RefreshKey, number | false> = {
+  off: false,
+  '5s': 5000,
+  '15s': 15000,
 };
 
-function parseMetrics(text: string): MetricRow[] {
-  const rows: MetricRow[] = [];
-  const lines = text.split('\n');
-  let currentHelp = '';
-  let currentType = '';
+const TYPE_COLORS: Record<string, string> = {
+  counter: 'blue',
+  gauge: 'green',
+  histogram: 'purple',
+  summary: 'gold',
+};
 
-  for (const line of lines) {
-    if (line.startsWith('# HELP ')) {
-      const parts = line.slice('# HELP '.length).split(' ');
-      currentHelp = parts.slice(1).join(' ');
-    } else if (line.startsWith('# TYPE ')) {
-      const parts = line.slice('# TYPE '.length).split(' ');
-      currentType = parts[1] ?? '';
-    } else if (line.trim() === '' || line.startsWith('#')) {
-      continue;
-    } else {
-      const match = line.match(/^([a-zA-Z0-9_:]+)(\{[^}]*\})?\s+(.+)$/);
-      if (match !== null) {
-        const name = match[1] ?? '';
-        const labelText = match[2] ?? '{}';
-        const value = match[3] ?? '';
-        const labels: Record<string, string> = {};
-        const labelMatch = labelText.slice(1, -1).match(/([a-zA-Z0-9_]+)="([^"]*)"/g);
-        if (labelMatch !== null) {
-          for (const pair of labelMatch) {
-            const segments = pair.split('=');
-            const key = segments[0];
-            const val = segments[1];
-            if (key !== undefined && val !== undefined) {
-              labels[key] = val.replace(/"/g, '');
-            }
-          }
-        }
-        rows.push({ name, type: currentType, labels, value, help: currentHelp });
-      }
-    }
-  }
-  return rows;
-}
-
+/** 系统指标：Prometheus 文本解析 + 搜索/自动刷新/原始文本。 */
 export function AdminMetricsPage(): ReactElement {
-  const [metrics, setMetrics] = useState<string | null>(null);
-  const [error, setError] = useState<unknown>(null);
+  const [refresh, setRefresh] = useState<RefreshKey>('off');
+  const [keyword, setKeyword] = useState('');
+  const metricsQuery = useQuery({
+    queryKey: ['admin', 'metrics'],
+    queryFn: fetchMetricsText,
+    refetchInterval: REFRESH_INTERVAL_MS[refresh],
+  });
 
-  const retry = useCallback((): void => {
-    setError(null);
-    setMetrics(null);
-    fetch('/metrics')
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`指标服务返回错误（HTTP ${response.status}）`);
-        return response.text();
-      })
-      .then(setMetrics)
-      .catch(setError);
-  }, []);
+  if (metricsQuery.isError) {
+    return (
+      <div className="page-stack">
+        <PageHeader
+          eyebrow="Admin / Metrics"
+          title="系统指标"
+          description="实时查看 Prometheus 格式的系统运行指标。"
+        />
+        <ErrorAlert
+          error={metricsQuery.error}
+          title="指标加载失败"
+          onRetry={() => void metricsQuery.refetch()}
+        />
+      </div>
+    );
+  }
 
-  useEffect(() => {
-    retry();
-  }, [retry]);
+  const metricsText = metricsQuery.data;
+  const rows = metricsText === undefined ? [] : parseMetrics(metricsText);
+  const summary = summarizeMetrics(rows);
+  const keywordText = keyword.trim().toLowerCase();
+  const filteredRows =
+    keywordText === ''
+      ? rows
+      : rows.filter(
+          (row) =>
+            row.name.toLowerCase().includes(keywordText) ||
+            row.help.toLowerCase().includes(keywordText),
+        );
 
-  const rows = metrics === null ? [] : parseMetrics(metrics);
   const columns: ColumnsType<MetricRow> = [
     {
       title: '指标',
       dataIndex: 'name',
-      width: 240,
-      render: (name: string) => <Typography.Text code>{name}</Typography.Text>,
+      width: 280,
+      render: (name: string, record) => (
+        <Space orientation="vertical" size={0}>
+          <Typography.Text code>{name}</Typography.Text>
+          {record.help === '' ? null : (
+            <Typography.Text type="secondary" className="metric-help">
+              {record.help}
+            </Typography.Text>
+          )}
+        </Space>
+      ),
     },
-    { title: '类型', dataIndex: 'type', width: 100, render: (type: string) => <Tag>{type}</Tag> },
+    {
+      title: '类型',
+      dataIndex: 'type',
+      width: 110,
+      render: (type: string) =>
+        type === '' ? (
+          <Typography.Text type="secondary">—</Typography.Text>
+        ) : (
+          <Tag color={TYPE_COLORS[type] ?? 'default'}>{type}</Tag>
+        ),
+    },
     {
       title: '标签',
       dataIndex: 'labels',
-      render: (labels: Record<string, string>) =>
-        Object.entries(labels).map(([key, value]) => (
-          <Tag key={String(key)}>
-            {String(key)}={String(value)}
-          </Tag>
-        )),
+      render: (labels: Record<string, string>) => (
+        <Space size={4} wrap>
+          {Object.entries(labels).map(([key, value]) => (
+            <Tag key={key}>
+              {key}={value}
+            </Tag>
+          ))}
+        </Space>
+      ),
     },
-    { title: '数值', dataIndex: 'value', width: 140, render: (value: string) => value },
+    {
+      title: '数值',
+      dataIndex: 'value',
+      width: 150,
+      render: (value: string) => <span className="numeric-cell">{value}</span>,
+    },
   ];
 
   return (
@@ -101,41 +132,88 @@ export function AdminMetricsPage(): ReactElement {
         eyebrow="Admin / Metrics"
         title="系统指标"
         description="实时查看 Prometheus 格式的系统运行指标，包括审查量、发现数、Token 消耗与运行时数据。"
+        extra={
+          <Space wrap>
+            <Segmented<RefreshKey>
+              value={refresh}
+              onChange={(value) => setRefresh(value)}
+              options={[
+                { label: '手动刷新', value: 'off' },
+                { label: '每 5s', value: '5s' },
+                { label: '每 15s', value: '15s' },
+              ]}
+            />
+            <Button
+              icon={<ReloadOutlined />}
+              loading={metricsQuery.isFetching}
+              onClick={() => void metricsQuery.refetch()}
+            >
+              立即刷新
+            </Button>
+          </Space>
+        }
       />
-      <Card className="surface-card" title={<CardHeading title="Prometheus 指标" />}>
-        {error !== null ? (
-          <ErrorAlert error={error} title="加载失败" onRetry={retry} />
-        ) : metrics === null ? (
+      <Row gutter={[16, 16]}>
+        <Col xs={12} md={6}>
+          <Card className="surface-card stat-card accent-blue">
+            <div className="stat-card-label">指标条数</div>
+            <div className="stat-card-value">{rows.length}</div>
+          </Card>
+        </Col>
+        {Array.from(summary.entries()).map(([type, count]) => (
+          <Col key={type} xs={12} md={6}>
+            <Card className="surface-card stat-card accent-teal">
+              <div className="stat-card-label">{type}</div>
+              <div className="stat-card-value">{count}</div>
+            </Card>
+          </Col>
+        ))}
+      </Row>
+      <Card
+        className="surface-card data-table-card"
+        title={<CardHeading title="Prometheus 指标" />}
+        extra={
+          <Input.Search
+            allowClear
+            placeholder="按指标名或说明搜索"
+            value={keyword}
+            onChange={(event) => setKeyword(event.target.value)}
+            style={{ width: 260 }}
+          />
+        }
+      >
+        {metricsText === undefined ? (
           <Skeleton active paragraph={{ rows: 8 }} />
+        ) : filteredRows.length === 0 ? (
+          <EmptyState
+            title={rows.length === 0 ? '暂无指标数据' : '没有匹配的指标'}
+            description={
+              rows.length === 0
+                ? '服务尚未输出任何指标，或在配置中关闭了指标采集。'
+                : '尝试调整搜索关键词，或清空搜索框查看全部指标。'
+            }
+            action={
+              keyword !== '' ? <Button onClick={() => setKeyword('')}>清空搜索</Button> : undefined
+            }
+          />
         ) : (
           <Table<MetricRow>
-            rowKey={(row, index) => `${row.name}:${index}`}
+            rowKey={(row) => `${row.name}${JSON.stringify(row.labels)}:${row.value}`}
             columns={columns}
-            dataSource={rows}
-            pagination={false}
+            dataSource={filteredRows}
+            pagination={{ pageSize: 20, showSizeChanger: true, showTotal: (t) => `共 ${t} 条` }}
             scroll={{ x: 800 }}
           />
         )}
       </Card>
-      {metrics !== null && (
-        <Card className="surface-card" title={<CardHeading title="原始文本" />}>
-          <pre
-            style={{
-              margin: 0,
-              padding: 16,
-              borderRadius: 8,
-              background: 'var(--canvas)',
-              color: 'var(--ink)',
-              fontFamily: 'ui-monospace, SFMono-Regular, Consolas, monospace',
-              fontSize: 12,
-              overflow: 'auto',
-              maxHeight: 400,
-            }}
-          >
-            {metrics}
-          </pre>
+      {metricsText !== undefined ? (
+        <Card
+          className="surface-card"
+          title={<CardHeading title="原始文本" hint="Prometheus 文本格式" />}
+        >
+          <CodeBlock code={metricsText} title="metrics" maxHeight={360} showLineNumbers />
         </Card>
-      )}
+      ) : null}
     </div>
   );
 }

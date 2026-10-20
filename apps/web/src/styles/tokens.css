@@ -1,0 +1,142 @@
+/* —— ReviewFlow 设计变量 ——
+   明暗两套值一一对应；组件样式只消费变量，不在页面里写死颜色。 */
+:root {
+  color-scheme: light;
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Noto Sans SC',
+    sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, 'SF Mono', Consolas, 'Liberation Mono', monospace;
+
+  --canvas: #f6f7fb;
+  --panel: #ffffff;
+  --panel-muted: #f8fafc;
+  --panel-raised: #ffffff;
+  --ink: #0f172a;
+  --ink-2: #334155;
+  --muted: #64748b;
+  --faint: #94a3b8;
+  --line: #e2e8f0;
+  --line-soft: #eef2f7;
+  --line-strong: #cbd5e1;
+
+  --brand: #4f46e5;
+  --brand-hover: #4338ca;
+  --brand-soft: #eef2ff;
+  --brand-contrast: #ffffff;
+  --nav: #ffffff;
+  --nav-text: #334155;
+  --nav-muted: #94a3b8;
+
+  --success: #059669;
+  --success-soft: #ecfdf5;
+  --warning: #d97706;
+  --warning-soft: #fffbeb;
+  --error: #dc2626;
+  --error-soft: #fef2f2;
+  --info: #2563eb;
+  --info-soft: #eff6ff;
+
+  --severity-blocker: #dc2626;
+  --severity-blocker-soft: #fef2f2;
+  --severity-warning: #d97706;
+  --severity-warning-soft: #fffbeb;
+  --severity-nit: #2563eb;
+  --severity-nit-soft: #eff6ff;
+  --severity-praise: #059669;
+  --severity-praise-soft: #ecfdf5;
+
+  --diff-bg: #ffffff;
+  --diff-text: #1e293b;
+  --diff-gutter: #f8fafc;
+  --diff-border: #e2e8f0;
+  --diff-hover: #f8fafc;
+  --diff-add-bg: #f0fdf4;
+  --diff-add-text: #166534;
+  --diff-remove-bg: #fef2f2;
+  --diff-remove-text: #991b1b;
+  --diff-meta-bg: #f1f5f9;
+  --diff-meta-text: #475569;
+  --diff-finding-bg: #fffbeb;
+  --diff-finding-line: #f59e0b;
+
+  --scroll-thumb: #cbd5e1;
+  --scroll-thumb-hover: #94a3b8;
+
+  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.03);
+  --shadow-md: 0 8px 24px rgba(15, 23, 42, 0.08);
+  --shadow-lg: 0 18px 48px rgba(15, 23, 42, 0.12);
+
+  --radius-sm: 8px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+
+  --sider-width: 240px;
+  --topbar-height: 68px;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --canvas: #0b1220;
+  --panel: #1e293b;
+  --panel-muted: #172033;
+  --panel-raised: #243449;
+  --ink: #f1f5f9;
+  --ink-2: #cbd5e1;
+  --muted: #94a3b8;
+  --faint: #64748b;
+  --line: #334155;
+  --line-soft: #243449;
+  --line-strong: #475569;
+
+  --brand: #818cf8;
+  --brand-hover: #a5b4fc;
+  --brand-soft: #312e81;
+  --nav: #1e293b;
+  --nav-text: #e2e8f0;
+  --nav-muted: #64748b;
+
+  --success: #34d399;
+  --success-soft: #052e1b;
+  --warning: #fbbf24;
+  --warning-soft: #3a2a0a;
+  --error: #f87171;
+  --error-soft: #3b1114;
+  --info: #60a5fa;
+  --info-soft: #172554;
+
+  --severity-blocker: #f87171;
+  --severity-blocker-soft: #3b1114;
+  --severity-warning: #fbbf24;
+  --severity-warning-soft: #3a2a0a;
+  --severity-nit: #60a5fa;
+  --severity-nit-soft: #172554;
+  --severity-praise: #34d399;
+  --severity-praise-soft: #052e1b;
+
+  --diff-bg: #0f172a;
+  --diff-text: #e2e8f0;
+  --diff-gutter: #111c2e;
+  --diff-border: #334155;
+  --diff-hover: #172033;
+  --diff-add-bg: #052e1b;
+  --diff-add-text: #86efac;
+  --diff-remove-bg: #3b1114;
+  --diff-remove-text: #fca5a5;
+  --diff-meta-bg: #172033;
+  --diff-meta-text: #94a3b8;
+  --diff-finding-bg: #3a2a0a;
+  --diff-finding-line: #fbbf24;
+
+  --scroll-thumb: #475569;
+  --scroll-thumb-hover: #64748b;
+
+  --shadow-xs: 0 1px 2px rgba(2, 6, 23, 0.4);
+  --shadow-sm: 0 1px 3px rgba(2, 6, 23, 0.45);
+  --shadow-md: 0 8px 24px rgba(2, 6, 23, 0.45);
+  --shadow-lg: 0 18px 48px rgba(2, 6, 23, 0.55);
+}

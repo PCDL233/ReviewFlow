@@ -18,15 +18,22 @@ export const STAGE_GROUPS: ReadonlyArray<{
   { key: 'report', label: '生成报告', stages: ['report'] },
 ];
 
-function stageToStepIndex(stage: string): number {
+/** 阶段名 → 步骤索引（未知阶段归入第一步，避免进度条越界）。 */
+export function stageToStepIndex(stage: string): number {
   const index = STAGE_GROUPS.findIndex((group) => group.stages.includes(stage));
   return index === -1 ? 0 : index;
 }
 
+export type ConnectionState = 'connecting' | 'open' | 'error' | 'closed';
+
 export type CompletedResult = { riskScore: number; blockerCount: number; blocking: boolean };
+
 export type ReviewProgress = {
   step: number;
   currentStage: string | undefined;
+  /** 最近一次阶段事件的明细（文件数、分流结果等）。 */
+  detail: string | undefined;
+  connection: ConnectionState;
   finished: boolean;
   failed: boolean;
   cancelled: boolean;
@@ -37,6 +44,8 @@ export type ReviewProgress = {
 const INITIAL_PROGRESS: ReviewProgress = {
   step: 0,
   currentStage: undefined,
+  detail: undefined,
+  connection: 'connecting',
   finished: false,
   failed: false,
   cancelled: false,
@@ -44,7 +53,19 @@ const INITIAL_PROGRESS: ReviewProgress = {
   result: undefined,
 };
 
-/** 订阅审查进度 SSE，并在组件卸载时关闭长连接。 */
+/** 由 SSE 事件推导的终态摘要（供进度面板文案使用）。 */
+export function terminalLabel(progress: ReviewProgress): string {
+  if (progress.cancelled) return '已取消';
+  if (progress.failed) return '失败';
+  if (progress.finished) return '已完成';
+  return '进行中';
+}
+
+/**
+ * 订阅审查进度 SSE。
+ * 终态（completed/failed/cancelled）后主动关闭连接，避免服务端持续保活；
+ * 坏帧（非 JSON 或不符合契约）忽略但不断流。
+ */
 export function useReviewEvents(
   reviewId: string | undefined,
   onFinish: (failed: boolean) => void,
@@ -54,9 +75,30 @@ export function useReviewEvents(
   onFinishRef.current = onFinish;
 
   useEffect(() => {
-    if (reviewId === undefined) return;
+    if (reviewId === undefined) {
+      setProgress(INITIAL_PROGRESS);
+      return;
+    }
     setProgress(INITIAL_PROGRESS);
     const source = new EventSource(`/api/reviews/${encodeURIComponent(reviewId)}/events`);
+    let closed = false;
+    const close = (): void => {
+      if (closed) return;
+      closed = true;
+      source.close();
+    };
+
+    source.onopen = () => {
+      setProgress((current) => (current.finished ? current : { ...current, connection: 'open' }));
+    };
+    source.onerror = () => {
+      if (closed) return;
+      setProgress((current) =>
+        current.finished
+          ? { ...current, connection: 'closed' }
+          : { ...current, connection: 'error' },
+      );
+    };
 
     const handleEvent = (event: Event): void => {
       if (!(event instanceof MessageEvent)) return;
@@ -70,17 +112,24 @@ export function useReviewEvents(
       const parsed = ReviewStageEventSchema.safeParse(rawPayload);
       if (!parsed.success) return;
       const payload = parsed.data;
+
       if (payload.type === 'stage') {
         setProgress((current) => ({
           ...current,
+          connection: 'open',
           currentStage: payload.stage,
+          detail: payload.detail ?? current.detail,
           step: Math.max(current.step, stageToStepIndex(payload.stage)),
         }));
         return;
       }
+
+      const failed = payload.type !== 'completed';
       if (payload.type === 'completed') {
         setProgress((current) => ({
           ...current,
+          connection: 'closed',
+          step: STAGE_GROUPS.length - 1,
           finished: true,
           result: {
             riskScore: payload.riskScore,
@@ -91,18 +140,21 @@ export function useReviewEvents(
       } else {
         setProgress((current) => ({
           ...current,
+          connection: 'closed',
           finished: true,
           failed: payload.type === 'failed',
           cancelled: payload.type === 'cancelled',
           message: payload.message,
         }));
       }
-      onFinishRef.current(payload.type !== 'completed');
+      close();
+      onFinishRef.current(failed);
     };
 
-    for (const type of ['stage', 'completed', 'failed', 'cancelled'])
+    for (const type of ['stage', 'completed', 'failed', 'cancelled']) {
       source.addEventListener(type, handleEvent);
-    return () => source.close();
+    }
+    return close;
   }, [reviewId]);
 
   return progress;

@@ -1,148 +1,51 @@
 import { useNavigate } from '@tanstack/react-router';
 import type { ReactElement } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
+import { Button, Card, Col, Row } from 'antd';
 import {
-  ArrowRightOutlined,
   BarChartOutlined,
+  FileSearchOutlined,
   HistoryOutlined,
   PlayCircleOutlined,
 } from '@ant-design/icons';
-import {
-  App as AntdApp,
-  Button,
-  Card,
-  Col,
-  Popconfirm,
-  Row,
-  Space,
-  Statistic,
-  Table,
-  Tag,
-  Typography,
-} from 'antd';
-import type { ColumnsType } from 'antd/es/table';
-import type { ReviewListItem } from '@ai-review/shared/api';
-import { deleteReview, fetchReviews, fetchStats } from '../api';
+import { fetchReviewPage, fetchStats } from '../api';
 import { useAuth } from '../hooks/use-auth';
-import { useNotify } from '../hooks/use-notify';
-import { formatDateTime } from '../format';
-import { CardHeading, PageHeader } from '../components/PageHeader';
+import { formatNumber } from '../format';
+import { CardHeading } from '../components/PageHeader';
 import { LoadErrorState } from '../components/ErrorAlert';
+import { EmptyState } from '../components/EmptyState';
+import { WelcomePanel } from './home/WelcomePanel';
+import { KpiGrid } from './home/KpiGrid';
+import { RecentReviews } from './home/RecentReviews';
+import { QualitySnapshot } from './home/QualitySnapshot';
 
-function formatCount(value: number): string {
-  return new Intl.NumberFormat('zh-CN').format(value);
-}
+const RECENT_LIMIT = 6;
 
+/** 工作台：问候 + KPI + 最近审查 + 质量快照；首次使用给出三步引导。 */
 export function HomePage(): ReactElement {
-  const { message } = AntdApp.useApp();
-  const { notifyError } = useNotify();
   const { user } = useAuth();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const statsQuery = useQuery({ queryKey: ['stats'], queryFn: () => fetchStats() });
-  const reviewsQuery = useQuery({ queryKey: ['reviews'], queryFn: () => fetchReviews() });
-  const deleteMutation = useMutation({
-    mutationFn: (reviewId: string) => deleteReview(reviewId),
-    onSuccess: () => {
-      void message.success('审查记录已删除');
-      void queryClient.invalidateQueries({ queryKey: ['reviews'] });
-      void queryClient.invalidateQueries({ queryKey: ['stats'] });
-    },
-    onError: (e) => notifyError(e, { title: '删除失败' }),
+  const reviewsQuery = useQuery({
+    queryKey: ['reviews', 'recent', RECENT_LIMIT],
+    queryFn: () => fetchReviewPage({ page: 1, pageSize: RECENT_LIMIT }),
   });
 
-  const recentColumns: ColumnsType<ReviewListItem> = [
-    {
-      title: '审查 ID',
-      dataIndex: 'reviewId',
-      render: (reviewId: string) => (
-        <Typography.Link
-          onClick={() => void navigate({ to: '/reviews/$reviewId', params: { reviewId } })}
-        >
-          <Typography.Text code>{reviewId}</Typography.Text>
-        </Typography.Link>
-      ),
-    },
-    { title: '仓库', dataIndex: 'repoPath', ellipsis: true },
-    {
-      title: '风险评分',
-      dataIndex: 'riskScore',
-      width: 110,
-      render: (riskScore: number) => (
-        <span className="score-number">
-          {riskScore}
-          <span className="score-suffix"> /100</span>
-        </span>
-      ),
-    },
-    {
-      title: '发现',
-      dataIndex: 'blockerCount',
-      width: 130,
-      render: (blockerCount: number) =>
-        blockerCount > 0 ? (
-          <Tag color="error">BLOCKER {blockerCount}</Tag>
-        ) : (
-          <Tag color="success">无阻断</Tag>
-        ),
-    },
-    { title: '时间', dataIndex: 'createdAt', width: 180, render: (v: string) => formatDateTime(v) },
-    ...(user?.role === 'admin'
-      ? [
-          {
-            title: '操作',
-            key: 'actions',
-            width: 90,
-            render: (_: unknown, record: ReviewListItem) => (
-              <Popconfirm
-                title="确认删除该审查记录？"
-                onConfirm={() => deleteMutation.mutate(record.reviewId)}
-              >
-                <Typography.Link type="danger">删除</Typography.Link>
-              </Popconfirm>
-            ),
-          },
-        ]
-      : []),
-  ];
+  const stats = statsQuery.data;
+  const totalReviews = stats?.totalReviews ?? 0;
+  const firstRun = !statsQuery.isPending && totalReviews === 0;
 
   return (
     <div className="page-stack">
-      <PageHeader
-        eyebrow="Workspace"
-        title="工作台"
-        description="查看团队审查概况，发起新的代码审查，或继续跟进最近的风险发现。"
-        actions={
-          <Button
-            type="primary"
-            icon={<PlayCircleOutlined />}
-            onClick={() => void navigate({ to: '/run' })}
-          >
-            发起审查
-          </Button>
-        }
+      <WelcomePanel
+        username={user?.username ?? '当前用户'}
+        role={user?.role}
+        totalReviews={totalReviews}
+        avgRiskScore={stats?.avgRiskScore ?? 0}
+        loading={statsQuery.isPending}
+        onRun={() => void navigate({ to: '/run' })}
+        onHistory={() => void navigate({ to: '/reviews' })}
       />
-
-      <Card className="surface-card welcome-card">
-        <div>
-          <Typography.Title level={3} className="welcome-title">
-            欢迎回来，{user?.username ?? '当前用户'}
-          </Typography.Title>
-          <Space wrap>
-            <Button type="primary" onClick={() => void navigate({ to: '/run' })}>
-              开始审查
-            </Button>
-            <Button onClick={() => void navigate({ to: '/reviews' })}>查看历史报告</Button>
-          </Space>
-        </div>
-        <div className="welcome-summary">
-          <Statistic
-            title="累计审查"
-            value={statsQuery.data?.totalReviews ?? 0}
-            loading={statsQuery.isPending}
-          />
-        </div>
-      </Card>
 
       {statsQuery.isError ? (
         <LoadErrorState
@@ -151,70 +54,103 @@ export function HomePage(): ReactElement {
           onRetry={() => void statsQuery.refetch()}
         />
       ) : (
+        <KpiGrid stats={stats} loading={statsQuery.isPending} />
+      )}
+
+      {firstRun ? (
+        <Card className="surface-card" title={<CardHeading title="开始使用 ReviewFlow" />}>
+          <div className="onboarding-steps">
+            <div className="onboarding-step">
+              <span className="onboarding-index">01</span>
+              <div>
+                <div className="onboarding-title">配置模型</div>
+                <p className="onboarding-desc">
+                  在系统配置或 AI 模型页填写 Provider 与 API Key；未配置时自动回退到本地 Ollama 或
+                  mock。
+                </p>
+              </div>
+              <Button onClick={() => void navigate({ to: '/profile' })}>个人设置</Button>
+            </div>
+            <div className="onboarding-step">
+              <span className="onboarding-index">02</span>
+              <div>
+                <div className="onboarding-title">发起一次审查</div>
+                <p className="onboarding-desc">
+                  填写仓库路径并选择 Fast / Full 模式，进度会通过 SSE 实时展示。
+                </p>
+              </div>
+              <Button
+                type="primary"
+                icon={<PlayCircleOutlined />}
+                onClick={() => void navigate({ to: '/run' })}
+              >
+                发起审查
+              </Button>
+            </div>
+            <div className="onboarding-step">
+              <span className="onboarding-index">03</span>
+              <div>
+                <div className="onboarding-title">查看报告</div>
+                <p className="onboarding-desc">
+                  报告包含变更概述、发现列表、Diff 标注与改进建议，可导出 Markdown / HTML / JSON。
+                </p>
+              </div>
+              <Button icon={<HistoryOutlined />} onClick={() => void navigate({ to: '/reviews' })}>
+                审查历史
+              </Button>
+            </div>
+          </div>
+        </Card>
+      ) : (
         <Row gutter={[16, 16]}>
-          <Col xs={12} lg={6}>
-            <Card className="surface-card stat-card accent-blue">
-              <Statistic
-                title="审查总数"
-                value={statsQuery.data?.totalReviews ?? 0}
-                loading={statsQuery.isPending}
-              />
-            </Card>
+          <Col xs={24} xl={16}>
+            <RecentReviews
+              reviews={reviewsQuery.data?.reviews}
+              loading={reviewsQuery.isPending}
+              error={reviewsQuery.isError ? reviewsQuery.error : undefined}
+              onRetry={() => void reviewsQuery.refetch()}
+              onOpen={(reviewId) =>
+                void navigate({ to: '/reviews/$reviewId', params: { reviewId } })
+              }
+              onViewAll={() => void navigate({ to: '/reviews' })}
+              onRun={() => void navigate({ to: '/run' })}
+            />
           </Col>
-          <Col xs={12} lg={6}>
-            <Card className="surface-card stat-card accent-teal">
-              <Statistic
-                title="发现总数"
-                value={statsQuery.data?.totalFindings ?? 0}
-                loading={statsQuery.isPending}
-              />
-            </Card>
-          </Col>
-          <Col xs={12} lg={6}>
-            <Card className="surface-card stat-card accent-orange">
-              <Statistic
-                title="平均风险分"
-                value={statsQuery.data?.avgRiskScore ?? 0}
-                precision={1}
-                suffix="/100"
-                loading={statsQuery.isPending}
-              />
-            </Card>
-          </Col>
-          <Col xs={12} lg={6}>
-            <Card className="surface-card stat-card accent-blue">
-              <Statistic
-                title="Token 消耗"
-                value={statsQuery.data?.totalTokenUsed ?? 0}
-                formatter={(value) => formatCount(Number(value))}
-                loading={statsQuery.isPending}
-              />
-            </Card>
+          <Col xs={24} xl={8}>
+            {statsQuery.isError ? (
+              <Card className="surface-card">
+                <EmptyState title="质量快照不可用" description="统计数据加载失败，请稍后重试。" />
+              </Card>
+            ) : stats === undefined ? (
+              <Card className="surface-card" loading />
+            ) : (
+              <QualitySnapshot stats={stats} onOpenStats={() => void navigate({ to: '/stats' })} />
+            )}
           </Col>
         </Row>
       )}
 
-      <Card className="surface-card" title={<CardHeading title="常用操作" />}>
+      <Card className="surface-card" title={<CardHeading title="快捷入口" />}>
         <Row gutter={[12, 12]}>
-          <Col xs={24} md={8}>
+          <Col xs={24} sm={12} lg={6}>
             <Button
               block
               icon={<PlayCircleOutlined />}
               onClick={() => void navigate({ to: '/run' })}
             >
-              发起一次新审查
+              发起新审查
             </Button>
           </Col>
-          <Col xs={24} md={8}>
+          <Col xs={24} sm={12} lg={6}>
             <Button
               block
               icon={<HistoryOutlined />}
               onClick={() => void navigate({ to: '/reviews' })}
             >
-              浏览历史报告
+              浏览审查历史
             </Button>
           </Col>
-          <Col xs={24} md={8}>
+          <Col xs={24} sm={12} lg={6}>
             <Button
               block
               icon={<BarChartOutlined />}
@@ -223,33 +159,22 @@ export function HomePage(): ReactElement {
               查看统计分析
             </Button>
           </Col>
+          <Col xs={24} sm={12} lg={6}>
+            <Button
+              block
+              icon={<FileSearchOutlined />}
+              onClick={() => void navigate({ to: '/profile' })}
+            >
+              个人设置
+            </Button>
+          </Col>
         </Row>
-      </Card>
-
-      <Card
-        className="surface-card data-table-card"
-        title={<CardHeading title="最近审查" />}
-        extra={
-          <Button
-            type="link"
-            icon={<ArrowRightOutlined />}
-            onClick={() => void navigate({ to: '/reviews' })}
-          >
-            查看全部
-          </Button>
-        }
-      >
-        <Table<ReviewListItem>
-          rowKey="reviewId"
-          columns={recentColumns}
-          dataSource={reviewsQuery.data?.slice(0, 5) ?? []}
-          loading={reviewsQuery.isPending}
-          pagination={false}
-          scroll={{ x: 680 }}
-          locale={{
-            emptyText: <div className="empty-copy">还没有审查记录，从一次新审查开始吧。</div>,
-          }}
-        />
+        {stats === undefined ? null : (
+          <p className="home-footnote">
+            累计 {formatNumber(stats.totalReviews)} 次审查 · {formatNumber(stats.totalFindings)}{' '}
+            条发现 · Token {formatNumber(stats.totalTokenUsed)}
+          </p>
+        )}
       </Card>
     </div>
   );

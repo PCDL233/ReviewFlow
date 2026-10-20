@@ -112,9 +112,7 @@ export function adminGroupKeyOf(pathname: string): string | null {
   for (const entry of ADMIN_MENU) {
     if (!isAdminMenuGroup(entry)) continue;
     if (
-      entry.children.some(
-        (child) => pathname === child.key || pathname.startsWith(`${child.key}/`),
-      )
+      entry.children.some((child) => pathname === child.key || pathname.startsWith(`${child.key}/`))
     ) {
       return entry.key;
     }

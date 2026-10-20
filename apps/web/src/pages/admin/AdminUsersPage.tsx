@@ -1,24 +1,33 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ReactElement } from 'react';
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import {
   App as AntdApp,
   Button,
   Card,
   Checkbox,
+  Dropdown,
   Form,
   Input,
   Modal,
-  Popconfirm,
+  Select,
   Space,
+  Switch,
   Table,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd';
-import { PlusOutlined, SafetyCertificateOutlined, UserAddOutlined } from '@ant-design/icons';
+import {
+  DeleteOutlined,
+  KeyOutlined,
+  MoreOutlined,
+  PlusOutlined,
+  SafetyCertificateOutlined,
+  UserAddOutlined,
+} from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import type { Role, User } from '@ai-review/shared/api';
-import type { AdminCreateUserInput } from '@ai-review/shared/api';
+import type { AdminCreateUserInput, Role, User } from '@ai-review/shared/api';
 import {
   assignRoles,
   createUser,
@@ -28,30 +37,39 @@ import {
   patchUser,
   resetUserPassword,
 } from '../../api/admin';
-import { formatDateTime } from '../../format';
-import { useAuth } from '../../hooks/use-auth';
+import { formatDateTime, formatRelativeTime } from '../../format';
+import { useAuth, AUTH_QUERY_KEY } from '../../hooks/use-auth';
 import { useNotify } from '../../hooks/use-notify';
 import { UserAvatar } from '../../components/UserAvatar';
-import { CardHeading } from '../../components/PageHeader';
+import { CardHeading, PageHeader } from '../../components/PageHeader';
+import { ErrorAlert } from '../../components/ErrorAlert';
+import { EmptyState } from '../../components/EmptyState';
 
-/** 用户管理（管理后台）：新增用户、角色调整、启用/禁用、重置密码、删除 */
+const USERS_QUERY_KEY = ['admin', 'users'] as const;
+const ROLES_QUERY_KEY = ['admin', 'roles'] as const;
+
+type StatusFilter = 'all' | 'active' | 'disabled';
+
+/** 用户管理（管理后台）：新增用户、角色调整、启用/禁用、重置密码、删除。 */
 export function AdminUsersPage(): ReactElement {
   const { message, modal } = AntdApp.useApp();
   const { notifyError } = useNotify();
   const { user: currentUser } = useAuth();
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [roleFilter, setRoleFilter] = useState<string | undefined>(undefined);
   const [createOpen, setCreateOpen] = useState(false);
   const [createForm] = Form.useForm<AdminCreateUserInput>();
   const [assignOpen, setAssignOpen] = useState(false);
   const [assignTarget, setAssignTarget] = useState<User | null>(null);
   const [assignForm] = Form.useForm<{ roleIds: string[] }>();
 
-  const usersQuery = useQuery({ queryKey: ['admin', 'users'], queryFn: fetchUsers });
-  const rolesQuery = useQuery({ queryKey: ['admin', 'roles'], queryFn: fetchRoles });
+  const usersQuery = useQuery({ queryKey: USERS_QUERY_KEY, queryFn: fetchUsers });
+  const rolesQuery = useQuery({ queryKey: ROLES_QUERY_KEY, queryFn: fetchRoles });
 
   const invalidate = (): void => {
-    void queryClient.invalidateQueries({ queryKey: ['admin', 'users'] });
+    void queryClient.invalidateQueries({ queryKey: USERS_QUERY_KEY });
     void queryClient.invalidateQueries({ queryKey: ['admin', 'overview'] });
   };
 
@@ -68,7 +86,7 @@ export function AdminUsersPage(): ReactElement {
       void modal.success({
         title: '密码已重置',
         content: (
-          <Space direction="vertical">
+          <Space orientation="vertical">
             <Typography.Text type="secondary">
               新密码（仅显示一次，请立即转告该用户）：
             </Typography.Text>
@@ -118,141 +136,266 @@ export function AdminUsersPage(): ReactElement {
       setAssignTarget(null);
       invalidate();
       // 若分配的是当前登录用户，同步刷新本地认证态（导航权限即时生效）
-      if (currentUser?.id === user.id) {
-        queryClient.setQueryData(['auth'], user);
-      }
+      if (currentUser?.id === user.id) queryClient.setQueryData(AUTH_QUERY_KEY, user);
     },
     onError: (e) => notifyError(e, { title: '分配角色失败' }),
   });
 
-  const filteredUsers = useMemo(() => {
-    const keyword = search.trim().toLowerCase();
-    if (keyword === '') return usersQuery.data ?? [];
-    return (usersQuery.data ?? []).filter(
-      (user) =>
-        user.username.toLowerCase().includes(keyword) || user.id.toLowerCase().includes(keyword),
-    );
-  }, [search, usersQuery.data]);
+  const keyword = search.trim().toLowerCase();
+  const roleNames = new Map((rolesQuery.data ?? []).map((role) => [role.id, role.name]));
+  const filteredUsers = (usersQuery.data ?? []).filter((user) => {
+    if (
+      keyword !== '' &&
+      !user.username.toLowerCase().includes(keyword) &&
+      !user.id.toLowerCase().includes(keyword)
+    ) {
+      return false;
+    }
+    if (statusFilter !== 'all' && user.status !== statusFilter) return false;
+    if (roleFilter !== undefined && !user.roleIds.includes(roleFilter)) return false;
+    return true;
+  });
 
   const columns: ColumnsType<User> = [
     {
       title: '用户名',
       dataIndex: 'username',
-      width: 220,
+      width: 240,
       render: (_value, record) => (
         <Space size={10}>
-          <UserAvatar
-            user={record}
-            className="app-user-avatar"
-            style={{ width: 30, height: 30, borderRadius: 8, fontSize: 12 }}
-          />
-          <Typography.Text strong>{record.username}</Typography.Text>
+          <UserAvatar user={record} className="table-avatar" />
+          <Space orientation="vertical" size={0}>
+            <Space size={6}>
+              <Typography.Text strong>{record.username}</Typography.Text>
+              {record.id === currentUser?.id ? <Tag color="blue">当前账号</Tag> : null}
+            </Space>
+            <Typography.Text type="secondary" className="numeric-cell">
+              {record.id}
+            </Typography.Text>
+          </Space>
         </Space>
       ),
     },
     {
       title: '角色',
       dataIndex: 'role',
-      width: 130,
-      render: (role: string) => (
-        <Tag color={role === 'admin' ? 'gold' : 'blue'}>{role === 'admin' ? '管理员' : '用户'}</Tag>
+      width: 200,
+      render: (role: string, record) => (
+        <Space size={4} wrap>
+          <Tag color={role === 'admin' ? 'gold' : 'blue'}>
+            {role === 'admin' ? '管理员' : '用户'}
+          </Tag>
+          {record.roleIds.map((roleId) => (
+            <Tag key={roleId}>{roleNames.get(roleId) ?? roleId}</Tag>
+          ))}
+        </Space>
       ),
     },
     {
       title: '状态',
       dataIndex: 'status',
-      width: 110,
-      render: (status: string, record) => (
-        <Space size={4}>
-          <Tag color={status === 'active' ? 'green' : 'red'}>
-            {status === 'active' ? '正常' : '已禁用'}
-          </Tag>
-          {record.id !== currentUser?.id ? (
-            <Typography.Link
-              onClick={() =>
+      width: 150,
+      render: (status: string, record) =>
+        record.id === currentUser?.id ? (
+          <Tag color="green">正常</Tag>
+        ) : (
+          <Tooltip title={status === 'active' ? '点击禁用该用户' : '点击启用该用户'}>
+            <Switch
+              size="small"
+              checked={status === 'active'}
+              checkedChildren="正常"
+              unCheckedChildren="禁用"
+              loading={patchMutation.isPending && patchMutation.variables?.userId === record.id}
+              onChange={(checked) =>
                 patchMutation.mutate({
                   userId: record.id,
-                  patch: { status: status === 'active' ? 'disabled' : 'active' },
+                  patch: { status: checked ? 'active' : 'disabled' },
                 })
               }
-            >
-              {status === 'active' ? '禁用' : '启用'}
-            </Typography.Link>
-          ) : null}
-        </Space>
-      ),
+            />
+          </Tooltip>
+        ),
     },
     {
       title: '注册时间',
       dataIndex: 'createdAt',
-      width: 160,
-      render: (v: string) => formatDateTime(v),
+      width: 170,
+      render: (value: string) => formatDateTime(value),
     },
     {
       title: '最近登录',
       dataIndex: 'lastLoginAt',
-      width: 160,
+      width: 170,
       render: (lastLoginAt: string | null) =>
-        lastLoginAt === null ? '从未登录' : formatDateTime(lastLoginAt),
+        lastLoginAt === null ? (
+          <Typography.Text type="secondary">从未登录</Typography.Text>
+        ) : (
+          <Tooltip title={formatDateTime(lastLoginAt)}>{formatRelativeTime(lastLoginAt)}</Tooltip>
+        ),
     },
     {
       title: '操作',
       key: 'actions',
-      width: 180,
+      width: 90,
       fixed: 'right',
-      render: (_, record) =>
+      align: 'center',
+      render: (_value, record) =>
         record.id === currentUser?.id ? (
-          <Typography.Text type="secondary">当前账号</Typography.Text>
+          <Typography.Text type="secondary">—</Typography.Text>
         ) : (
-          <Space size={8}>
-            <Typography.Link onClick={() => openAssign(record)}>分配角色</Typography.Link>
-            <Typography.Link onClick={() => resetMutation.mutate(record.id)}>
-              重置密码
-            </Typography.Link>
-            <Popconfirm
-              title="确认删除该用户？"
-              description="删除后该用户将无法登录，其历史审查记录保留。"
-              onConfirm={() => deleteMutation.mutate(record.id)}
-            >
-              <Typography.Link type="danger">删除</Typography.Link>
-            </Popconfirm>
-          </Space>
+          <Dropdown
+            trigger={['click']}
+            menu={{
+              items: [
+                {
+                  key: 'roles',
+                  label: '分配角色',
+                  icon: <SafetyCertificateOutlined />,
+                },
+                {
+                  key: 'reset',
+                  label: '重置密码',
+                  icon: <KeyOutlined />,
+                },
+                { type: 'divider' },
+                {
+                  key: 'delete',
+                  label: '删除用户',
+                  icon: <DeleteOutlined />,
+                  danger: true,
+                },
+              ],
+              onClick: ({ key, domEvent }) => {
+                domEvent.stopPropagation();
+                if (key === 'roles') openAssign(record);
+                if (key === 'reset') {
+                  void modal.confirm({
+                    title: `重置 ${record.username} 的密码？`,
+                    content: '系统会生成一个随机新密码，旧密码立即失效。',
+                    okText: '重置',
+                    cancelText: '取消',
+                    onOk: () => resetMutation.mutate(record.id),
+                  });
+                }
+                if (key === 'delete') {
+                  void modal.confirm({
+                    title: `删除用户 ${record.username}？`,
+                    content: '删除后该用户将无法登录，其历史审查记录保留。',
+                    okText: '删除',
+                    okButtonProps: { danger: true },
+                    cancelText: '取消',
+                    onOk: () => deleteMutation.mutate(record.id),
+                  });
+                }
+              },
+            }}
+          >
+            <Button
+              type="text"
+              icon={<MoreOutlined />}
+              aria-label={`用户 ${record.username} 的操作`}
+            />
+          </Dropdown>
         ),
     },
   ];
 
   return (
-    <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-      <Card className="surface-card data-table-card">
-        <div className="table-toolbar">
-          <Input.Search
-            allowClear
-            placeholder="按用户名或用户 ID 搜索"
-            onChange={(event) => setSearch(event.target.value)}
-            style={{ maxWidth: 320 }}
-          />
+    <div className="page-stack">
+      <PageHeader
+        eyebrow="Admin / Users"
+        title="用户管理"
+        description="管理团队成员账号、角色分配与启停状态；当前登录账号不可被降级、禁用或删除。"
+        extra={
           <Button type="primary" icon={<UserAddOutlined />} onClick={() => setCreateOpen(true)}>
             增加用户
           </Button>
+        }
+      />
+      <Card className="surface-card data-table-card">
+        <div className="table-toolbar">
+          <Space wrap>
+            <Input.Search
+              allowClear
+              placeholder="按用户名或用户 ID 搜索"
+              onChange={(event) => setSearch(event.target.value)}
+              style={{ width: 260 }}
+            />
+            <Select<StatusFilter>
+              value={statusFilter}
+              onChange={setStatusFilter}
+              style={{ width: 130 }}
+              options={[
+                { value: 'all', label: '全部状态' },
+                { value: 'active', label: '正常' },
+                { value: 'disabled', label: '已禁用' },
+              ]}
+            />
+            <Select<string | undefined>
+              allowClear
+              placeholder="全部角色"
+              value={roleFilter}
+              onChange={(value) => setRoleFilter(value)}
+              style={{ width: 160 }}
+              options={(rolesQuery.data ?? []).map((role: Role) => ({
+                value: role.id,
+                label: role.name,
+              }))}
+            />
+          </Space>
+          <Typography.Text type="secondary">
+            共 {filteredUsers.length} / {usersQuery.data?.length ?? 0} 个用户
+          </Typography.Text>
         </div>
-        <Table<User>
-          rowKey="id"
-          size="middle"
-          loading={usersQuery.isPending}
-          columns={columns}
-          dataSource={filteredUsers}
-          scroll={{ x: 1100 }}
-          pagination={{
-            pageSize: 10,
-            showSizeChanger: false,
-            showTotal: (total) => `共 ${total} 个用户`,
-          }}
-        />
+        {usersQuery.isError ? (
+          <ErrorAlert
+            error={usersQuery.error}
+            title="用户列表加载失败"
+            onRetry={() => void usersQuery.refetch()}
+          />
+        ) : !usersQuery.isPending && filteredUsers.length === 0 ? (
+          <EmptyState
+            title={keyword === '' ? '暂无用户' : '没有匹配的用户'}
+            description={
+              keyword === ''
+                ? '创建第一个成员账号，或检查服务端初始化是否完成。'
+                : '尝试更换关键词或清空筛选条件。'
+            }
+            action={
+              keyword === '' ? (
+                <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+                  增加用户
+                </Button>
+              ) : (
+                <Button
+                  onClick={() => {
+                    setSearch('');
+                    setStatusFilter('all');
+                    setRoleFilter(undefined);
+                  }}
+                >
+                  清空筛选
+                </Button>
+              )
+            }
+          />
+        ) : (
+          <Table<User>
+            rowKey="id"
+            size="middle"
+            loading={usersQuery.isPending}
+            columns={columns}
+            dataSource={filteredUsers}
+            rowClassName={(record) => (record.id === currentUser?.id ? 'table-row-current' : '')}
+            scroll={{ x: 1100 }}
+            pagination={{
+              pageSize: 10,
+              showSizeChanger: false,
+              showTotal: (total) => `共 ${total} 个用户`,
+            }}
+          />
+        )}
       </Card>
-
-      <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-        提示：无法对当前登录账号降级、禁用或删除，防止误操作导致系统失去管理员。
-      </Typography.Paragraph>
 
       <Modal
         title={<CardHeading title="增加用户" />}
@@ -322,12 +465,12 @@ export function AdminUsersPage(): ReactElement {
         >
           <Form.Item name="roleIds" rules={[{ required: true, message: '请至少选择一个角色' }]}>
             <Checkbox.Group style={{ width: '100%' }}>
-              <Space direction="vertical" style={{ width: '100%' }}>
+              <Space orientation="vertical" style={{ width: '100%' }}>
                 {(rolesQuery.data ?? []).map((role: Role) => (
                   <Checkbox key={role.id} value={role.id}>
                     <Space size={6}>
                       <SafetyCertificateOutlined
-                        style={{ color: role.isSystem ? '#f59e0b' : '#4f46e5' }}
+                        style={{ color: role.isSystem ? 'var(--warning)' : 'var(--brand)' }}
                       />
                       {role.name}
                       {role.isSystem ? <Tag color="gold">内置</Tag> : null}
@@ -343,6 +486,6 @@ export function AdminUsersPage(): ReactElement {
           </Typography.Text>
         </Form>
       </Modal>
-    </Space>
+    </div>
   );
 }

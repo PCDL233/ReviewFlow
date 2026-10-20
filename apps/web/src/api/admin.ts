@@ -160,7 +160,9 @@ export async function updateCustomRules(rules: CustomRule[]): Promise<CustomRule
 }
 
 /** 试跑自定义审查规则（返回在示例输入上的命中行） */
-export async function testCustomRule(request: CustomRuleTestRequest): Promise<CustomRuleTestResult> {
+export async function testCustomRule(
+  request: CustomRuleTestRequest,
+): Promise<CustomRuleTestResult> {
   const payload = CustomRuleTestRequestSchema.parse(request);
   const response = await fetch(`${API_BASE}/rules/test`, {
     method: 'POST',

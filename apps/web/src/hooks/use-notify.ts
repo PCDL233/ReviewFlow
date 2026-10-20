@@ -22,9 +22,7 @@ export function useNotify(): {
   const notifyError = (error: unknown, options: NotifyOptions = {}): void => {
     const reason = getErrorMessage(error);
     const content =
-      options.title === undefined || options.title === ''
-        ? reason
-        : `${options.title}：${reason}`;
+      options.title === undefined || options.title === '' ? reason : `${options.title}：${reason}`;
     try {
       Promise.resolve(
         message.error({ content, duration: options.duration ?? 4, key: content }),

@@ -3,8 +3,31 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#111936" />
+    <meta
+      name="description"
+      content="ReviewFlow —— 基于静态分析与多 Agent 并行审查的团队代码质量工作台。"
+    />
+    <meta name="theme-color" content="#f6f7fb" />
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%234f46e5'/%3E%3Cpath d='M20 10l4.5 6-4.5 6M12 10L7.5 16l4.5 6' fill='none' stroke='white' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E"
+    />
     <title>ReviewFlow · AI Code Review</title>
+    <script>
+      // 在首屏绘制前确定主题，避免刷新时先亮后暗的闪烁。
+      (function () {
+        try {
+          var saved = window.localStorage.getItem('reviewflow-theme');
+          var prefersDark =
+            window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+          var mode = saved === 'dark' || saved === 'light' ? saved : prefersDark ? 'dark' : 'light';
+          document.documentElement.dataset.theme = mode;
+          document.documentElement.style.colorScheme = mode;
+        } catch (error) {
+          document.documentElement.dataset.theme = 'light';
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

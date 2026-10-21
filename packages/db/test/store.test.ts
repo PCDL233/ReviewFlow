@@ -219,7 +219,14 @@ describe('ReviewStore', () => {
           (row) => row.name,
         );
       expect(columns('findings')).toEqual(
-        expect.arrayContaining(['fingerprint', 'origin', 'line_scope', 'agents', 'status', 'rule_id']),
+        expect.arrayContaining([
+          'fingerprint',
+          'origin',
+          'line_scope',
+          'agents',
+          'status',
+          'rule_id',
+        ]),
       );
       expect(columns('reviews')).toEqual(
         expect.arrayContaining([

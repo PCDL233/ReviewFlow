@@ -97,10 +97,7 @@ export async function fetchReviewDetail(reviewId: string): Promise<ReviewReportD
 }
 
 /** 更新发现处置状态（人工闭环；不改变已生成的报告统计口径） */
-export async function updateFindingStatus(
-  findingId: number,
-  status: FindingStatus,
-): Promise<void> {
+export async function updateFindingStatus(findingId: number, status: FindingStatus): Promise<void> {
   await parseResponse(
     FalsePositiveResponseSchema,
     await fetch(`${API_BASE}/findings/${findingId}`, {
@@ -146,10 +143,7 @@ export async function fetchReviewTrace(reviewId: string): Promise<ReviewTrace> {
 }
 
 /** 与历史审查对比（按发现指纹：新增/已修复/仍存在） */
-export async function fetchReviewCompare(
-  reviewId: string,
-  baseId: string,
-): Promise<ReviewCompare> {
+export async function fetchReviewCompare(reviewId: string, baseId: string): Promise<ReviewCompare> {
   const body = await parseResponse(
     ReviewCompareResponseSchema,
     await fetch(
@@ -225,10 +219,7 @@ export async function startReview(
 
 /** 可用于发起审查的仓库列表（服务端扫描 allowedRoots + 历史审查记录） */
 export async function fetchRepositories(): Promise<Repository[]> {
-  const body = await parseResponse(
-    RepositoryListResponseSchema,
-    await fetch(`${API_BASE}/repos`),
-  );
+  const body = await parseResponse(RepositoryListResponseSchema, await fetch(`${API_BASE}/repos`));
   return body.repositories;
 }
 

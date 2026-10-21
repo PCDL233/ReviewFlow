@@ -744,7 +744,10 @@ describe('review REST API', () => {
     });
     const detail = (await (
       await app.request(`/api/reviews/${reviewId}`, { headers: auth(cookie) })
-    ).json()) as { findings: Array<{ id: number; status?: string }>; meta: Record<string, unknown> };
+    ).json()) as {
+      findings: Array<{ id: number; status?: string }>;
+      meta: Record<string, unknown>;
+    };
     const findingId = detail.findings[0]?.id;
     if (findingId === undefined) throw new Error('expected a finding');
 
@@ -1068,7 +1071,13 @@ describe('admin privilege isolation', () => {
         review: { dimensions: string[] };
         server: { maxConcurrent: number; ollamaModel: string };
       };
-      runtime: { port: number; dbPath: string; webDistDir: string | null; configPath: string; allowedRoots: string[] };
+      runtime: {
+        port: number;
+        dbPath: string;
+        webDistDir: string | null;
+        configPath: string;
+        allowedRoots: string[];
+      };
     };
     expect(body.config.server.maxConcurrent).toBe(4);
     expect(body.config.server.ollamaModel).toBe('qwen3-coder:14b');

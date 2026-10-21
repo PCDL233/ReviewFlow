@@ -72,9 +72,12 @@ export class AuditService {
   }
 
   /** 登录日志分页查询（不受 enabled 影响：存量日志仍可查询） */
-  public listLoginLogs(
-    query: LoginLogQuery,
-  ): { logs: LoginLog[]; total: number; page: number; pageSize: number } {
+  public listLoginLogs(query: LoginLogQuery): {
+    logs: LoginLog[];
+    total: number;
+    page: number;
+    pageSize: number;
+  } {
     if (this.store === undefined) {
       return { logs: [], total: 0, page: query.page, pageSize: query.pageSize };
     }
@@ -82,9 +85,12 @@ export class AuditService {
   }
 
   /** 操作日志分页查询 */
-  public listOperationLogs(
-    query: OperationLogQuery,
-  ): { logs: OperationLog[]; total: number; page: number; pageSize: number } {
+  public listOperationLogs(query: OperationLogQuery): {
+    logs: OperationLog[];
+    total: number;
+    page: number;
+    pageSize: number;
+  } {
     if (this.store === undefined) {
       return { logs: [], total: 0, page: query.page, pageSize: query.pageSize };
     }

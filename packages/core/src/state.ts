@@ -57,7 +57,9 @@ const metricsChannel = Annotation<ReviewMetrics>({
   reducer: (current, patch) => ({
     ...current,
     ...patch,
-    degradedToStatic: [...new Set([...current.degradedToStatic, ...(patch.degradedToStatic ?? [])])],
+    degradedToStatic: [
+      ...new Set([...current.degradedToStatic, ...(patch.degradedToStatic ?? [])]),
+    ],
     truncatedFiles: [...new Set([...current.truncatedFiles, ...(patch.truncatedFiles ?? [])])],
     dimensions:
       patch.dimensions === undefined || patch.dimensions.length === 0

@@ -47,17 +47,13 @@ const enabled = process.env.AI_REVIEW_LIVE_EVAL === '1';
 const configPath = process.env.AI_REVIEW_CONFIG ?? 'apps/server/.ai-review.yml';
 
 describe.skipIf(!enabled)('live LLM evaluation', () => {
-  it(
-    'detects the seeded eval defect with the configured provider',
-    async () => {
-      const provider = createConfiguredProvider(loadConfig(configPath));
-      const agent = new ReviewAgent(provider, 'security');
-      const result = await agent.review({ context });
-      const matched = result.findings.some((finding) =>
-        /eval/i.test(`${finding.title} ${finding.description}`),
-      );
-      expect(matched).toBe(true);
-    },
-    120_000,
-  );
+  it('detects the seeded eval defect with the configured provider', async () => {
+    const provider = createConfiguredProvider(loadConfig(configPath));
+    const agent = new ReviewAgent(provider, 'security');
+    const result = await agent.review({ context });
+    const matched = result.findings.some((finding) =>
+      /eval/i.test(`${finding.title} ${finding.description}`),
+    );
+    expect(matched).toBe(true);
+  }, 120_000);
 });

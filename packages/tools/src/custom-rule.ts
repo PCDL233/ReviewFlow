@@ -1,10 +1,5 @@
 import picomatch from 'picomatch';
-import type {
-  CustomRule,
-  CustomRuleMatchScope,
-  FileContext,
-  Finding,
-} from '@ai-review/shared';
+import type { CustomRule, CustomRuleMatchScope, FileContext, Finding } from '@ai-review/shared';
 
 /**
  * 用户自定义审查规则引擎（方案：custom_rule_check 确定性工具）。
@@ -69,7 +64,8 @@ function matchFileScope(rule: CustomRule, file: FileContext, pattern: RegExp): C
       for (const line of file.diff.changedLines) {
         if (line.type !== 'added' || line.newLineNo === null) continue;
         pattern.lastIndex = 0;
-        if (pattern.test(line.content)) hits.push({ scope, line: line.newLineNo, text: line.content });
+        if (pattern.test(line.content))
+          hits.push({ scope, line: line.newLineNo, text: line.content });
       }
     } else if (scope === 'staged') {
       // 暂存文件全文（index blob）：逐行匹配，行号为文件内行号；超长文件截断以限制单次正则成本
@@ -136,9 +132,7 @@ export function runCustomRules(
     if (pattern === null) continue;
     // 文件过滤：filePatterns 为空匹配全部；否则按 picomatch glob 语义（dot:true 覆盖隐藏文件）
     const isFileMatch =
-      rule.filePatterns.length === 0
-        ? () => true
-        : picomatch(rule.filePatterns, { dot: true });
+      rule.filePatterns.length === 0 ? () => true : picomatch(rule.filePatterns, { dot: true });
     for (const file of files) {
       if (!isFileMatch(file.diff.path.replaceAll('\\', '/'))) continue;
       findings.push(...toFindings(rule, file, matchFileScope(rule, file, pattern)));

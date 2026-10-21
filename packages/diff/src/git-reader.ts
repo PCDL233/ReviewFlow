@@ -78,12 +78,31 @@ export class GitReader {
 
   /**
    * 读取审查来源对应的 unified diff。
+   * 根提交没有父提交，`<sha>^!` 会退化成 `git diff <sha>`（工作区）而返回空串；
+   * 此时改用 `git show` 输出该提交引入的全部内容，避免首个提交被审成空变更。
    * @param source 审查来源
    * @param unified unified 上下文行数
    * @returns diff 文本
    */
-  public readDiff(source: ReviewSource, unified = 50): Promise<string> {
+  public async readDiff(source: ReviewSource, unified = 50): Promise<string> {
+    if (source.target === 'commit' && (await this.isRootCommit(source.commit))) {
+      return this.git('show', '--format=', `--unified=${unified}`, source.commit);
+    }
     return this.git('diff', ...resolveSource(source).diffArgs, `--unified=${unified}`);
+  }
+
+  /**
+   * 判断提交是否为根提交（没有父提交）。
+   * @param ref 提交引用
+   * @returns 根提交返回 true；引用无效时返回 false，并由后续 diff 命令给出明确错误
+   */
+  private async isRootCommit(ref: string): Promise<boolean> {
+    try {
+      const parents = await this.git('rev-list', '--parents', '-n', '1', ref);
+      return parents.trim().split(/\s+/).length === 1;
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -122,10 +141,7 @@ export class GitReader {
       }
     }
     try {
-      return await this.git(
-        'show',
-        `${content.kind === 'index' ? ':' : `${content.ref}:`}${path}`,
-      );
+      return await this.git('show', `${content.kind === 'index' ? ':' : `${content.ref}:`}${path}`);
     } catch {
       return '';
     }

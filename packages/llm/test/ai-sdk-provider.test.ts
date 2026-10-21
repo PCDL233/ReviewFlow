@@ -197,7 +197,8 @@ describe('AI SDK transport', () => {
     expect(result.usage.totalTokens).toBe(15);
   });
 
-  it('bounds a hanging tool with the configured timeout', async () => {    let step = 0;
+  it('bounds a hanging tool with the configured timeout', async () => {
+    let step = 0;
     const model = new MockLanguageModelV2({
       doGenerate: async () => {
         step += 1;

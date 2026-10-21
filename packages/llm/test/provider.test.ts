@@ -76,7 +76,11 @@ function openAiBody(
 describe('createMockProvider', () => {
   it('reports dynamic execution primitives and marks itself as mock', async () => {
     const result = await createMockProvider().review(makeRequest());
-    expect(result.findings[0]).toMatchObject({ agent: 'security', filePath: 'src/run.ts', lineStart: 3 });
+    expect(result.findings[0]).toMatchObject({
+      agent: 'security',
+      filePath: 'src/run.ts',
+      lineStart: 3,
+    });
     expect(result.status).toBe('mock');
   });
 
@@ -122,10 +126,13 @@ describe('createConfiguredProvider', () => {
   it('parses provider usage instead of leaving token accounting at zero', async () => {
     const fetchMock = vi.fn(
       async () =>
-        new Response(openAiBody('[]', { promptTokens: 120, completionTokens: 30, totalTokens: 150 }), {
-          status: 200,
-          headers: { 'content-type': 'application/json' },
-        }),
+        new Response(
+          openAiBody('[]', { promptTokens: 120, completionTokens: 30, totalTokens: 150 }),
+          {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          },
+        ),
     );
     vi.stubGlobal('fetch', fetchMock);
 
@@ -205,9 +212,7 @@ describe('degradation visibility', () => {
 
   it('marks the review unavailable when every provider fails (degrade mode)', async () => {
     process.env.AI_REVIEW_OLLAMA_BASE_URL = 'http://ollama.test/v1';
-    const fetchMock = vi.fn(
-      async () => new Response('upstream down', { status: 503 }),
-    );
+    const fetchMock = vi.fn(async () => new Response('upstream down', { status: 503 }));
     vi.stubGlobal('fetch', fetchMock);
 
     const config = AiReviewConfigSchema.parse({
@@ -217,7 +222,11 @@ describe('degradation visibility', () => {
 
     expect(result.status).toBe('unavailable');
     expect(result.provider).toBe('mock');
-    expect(result.attempts.map((attempt) => attempt.status)).toEqual(['failed', 'failed', 'succeeded']);
+    expect(result.attempts.map((attempt) => attempt.status)).toEqual([
+      'failed',
+      'failed',
+      'succeeded',
+    ]);
     expect(result.findings).toHaveLength(1);
   });
 
@@ -236,8 +245,8 @@ describe('degradation visibility', () => {
         onUnavailable: 'fail',
       },
     });
-    await expect(
-      createConfiguredProvider(config).review(makeRequest()),
-    ).rejects.toThrow('all configured LLM providers are unavailable');
+    await expect(createConfiguredProvider(config).review(makeRequest())).rejects.toThrow(
+      'all configured LLM providers are unavailable',
+    );
   });
 });

@@ -207,9 +207,7 @@ export function RunReviewView(props: RunReviewViewProps): ReactElement {
       ? undefined
       : target === 'staged' && repoStatus.stagedFiles === 0
         ? '当前没有暂存内容，先 git add 要审查的改动。'
-        : target === 'worktree' &&
-            repoStatus.unstagedFiles === 0 &&
-            repoStatus.stagedFiles === 0
+        : target === 'worktree' && repoStatus.unstagedFiles === 0 && repoStatus.stagedFiles === 0
           ? '工作区与 HEAD 没有差异。'
           : undefined;
 

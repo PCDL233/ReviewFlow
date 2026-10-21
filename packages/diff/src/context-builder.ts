@@ -186,11 +186,7 @@ export class DiffContextBuilder {
     const fullPaths = options.fullPaths;
     const files = await pMap(
       diffs,
-      (diff) =>
-        this.buildFileContext(
-          diff,
-          fullPaths === undefined || fullPaths.has(diff.path),
-        ),
+      (diff) => this.buildFileContext(diff, fullPaths === undefined || fullPaths.has(diff.path)),
       { concurrency: 8 },
     );
     return { files, metadata: { ...options.metadata, totalFiles: diffs.length } };

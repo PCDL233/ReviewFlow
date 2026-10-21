@@ -1,7 +1,12 @@
 import { REVIEW_PROMPT_VERSION, getMaxRiskScore, runReviewPipeline } from '@ai-review/core';
 import type { PipelineDeps, PipelineNodeName, ReviewState } from '@ai-review/core';
 import type { ReviewStore } from '@ai-review/db';
-import { computeReviewScore, describeLlmStatus, describeReviewSource, severityMeetsThreshold } from '@ai-review/shared';
+import {
+  computeReviewScore,
+  describeLlmStatus,
+  describeReviewSource,
+  severityMeetsThreshold,
+} from '@ai-review/shared';
 import type { ReviewReport, ReviewSource, ReviewStageEvent } from '@ai-review/shared';
 import { deriveQualityNotes, deriveSuggestions } from '@ai-review/report';
 import type { ReviewMetrics } from './metrics.js';
@@ -362,8 +367,7 @@ export class ReviewService {
     signal: AbortSignal,
     onNodeUpdate: (node: string, update: unknown) => void,
   ): Promise<ReviewState> {
-    const run = (): Promise<ReviewState> =>
-      this.runner(deps, { reviewId, signal, onNodeUpdate });
+    const run = (): Promise<ReviewState> => this.runner(deps, { reviewId, signal, onNodeUpdate });
     try {
       return await run();
     } catch (error) {
@@ -545,9 +549,8 @@ export class ReviewService {
       state.context.metadata.languages.length === 0
         ? '未知'
         : state.context.metadata.languages.join('/');
-    const dimensionLabel = dimensions === undefined || dimensions.length === 0
-      ? '未启用'
-      : dimensions.join('、');
+    const dimensionLabel =
+      dimensions === undefined || dimensions.length === 0 ? '未启用' : dimensions.join('、');
     const summary =
       `本次审查覆盖 ${state.context.metadata.totalFiles} 个文件（新增 ${state.context.metadata.totalAdditions} 行、删除 ${state.context.metadata.totalDeletions} 行，语言 ${languageLabel}），来源 ${sourceLabel}。` +
       `执行 ${dimensions?.length ?? 0} 个 LLM 维度（${dimensionLabel}）与静态分析，共发现 ${findings.length} 个问题（BLOCKER ${counts.BLOCKER} / WARNING ${counts.WARNING} / NIT ${counts.NIT}）。` +

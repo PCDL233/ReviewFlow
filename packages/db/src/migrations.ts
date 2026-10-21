@@ -73,9 +73,7 @@ const MIGRATIONS: readonly Migration[] = [
     version: 4,
     name: 'query-indexes',
     apply(sqlite) {
-      sqlite.exec(
-        'CREATE INDEX IF NOT EXISTS idx_findings_fingerprint ON findings(fingerprint)',
-      );
+      sqlite.exec('CREATE INDEX IF NOT EXISTS idx_findings_fingerprint ON findings(fingerprint)');
       sqlite.exec(
         'CREATE INDEX IF NOT EXISTS idx_reviews_repo_created ON reviews(repo_path, created_at)',
       );
@@ -105,12 +103,8 @@ const MIGRATIONS: readonly Migration[] = [
           created_at        TEXT NOT NULL
         );
       `);
-      sqlite.exec(
-        'CREATE INDEX IF NOT EXISTS idx_llm_calls_review ON llm_calls(review_id)',
-      );
-      sqlite.exec(
-        'CREATE INDEX IF NOT EXISTS idx_llm_calls_created ON llm_calls(created_at)',
-      );
+      sqlite.exec('CREATE INDEX IF NOT EXISTS idx_llm_calls_review ON llm_calls(review_id)');
+      sqlite.exec('CREATE INDEX IF NOT EXISTS idx_llm_calls_created ON llm_calls(created_at)');
     },
   },
   {
@@ -235,9 +229,9 @@ export function runMigrations(sqlite: Database.Database): void {
     );
   `);
   const applied = new Set(
-    (sqlite.prepare('SELECT version FROM schema_migrations').all() as Array<{ version: number }>).map(
-      (row) => Number(row.version),
-    ),
+    (
+      sqlite.prepare('SELECT version FROM schema_migrations').all() as Array<{ version: number }>
+    ).map((row) => Number(row.version)),
   );
   for (const migration of MIGRATIONS) {
     if (applied.has(migration.version)) continue;

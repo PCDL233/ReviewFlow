@@ -149,9 +149,12 @@ export class LogStore {
   }
 
   /** 登录日志分页查询（倒序 + 日期/状态/动作/用户名筛选；from/to 按 UTC 自然日闭区间） */
-  public listLoginLogs(
-    query: LoginLogQuery,
-  ): { logs: LoginLog[]; total: number; page: number; pageSize: number } {
+  public listLoginLogs(query: LoginLogQuery): {
+    logs: LoginLog[];
+    total: number;
+    page: number;
+    pageSize: number;
+  } {
     const filters = [
       query.q === undefined ? undefined : like(loginLogs.username, `%${query.q}%`),
       query.status === undefined ? undefined : eq(loginLogs.status, query.status),
@@ -159,9 +162,7 @@ export class LogStore {
       query.from === undefined
         ? undefined
         : gte(loginLogs.createdAt, `${query.from}T00:00:00.000Z`),
-      query.to === undefined
-        ? undefined
-        : lte(loginLogs.createdAt, `${query.to}T23:59:59.999Z`),
+      query.to === undefined ? undefined : lte(loginLogs.createdAt, `${query.to}T23:59:59.999Z`),
     ];
     const where = and(...filters);
     const totalRow = this.db.select({ value: count() }).from(loginLogs).where(where).get();
@@ -193,9 +194,12 @@ export class LogStore {
   }
 
   /** 操作日志分页查询（倒序 + 日期/动作/资源/状态/关键词筛选） */
-  public listOperationLogs(
-    query: OperationLogQuery,
-  ): { logs: OperationLog[]; total: number; page: number; pageSize: number } {
+  public listOperationLogs(query: OperationLogQuery): {
+    logs: OperationLog[];
+    total: number;
+    page: number;
+    pageSize: number;
+  } {
     const filters = [
       query.q === undefined
         ? undefined

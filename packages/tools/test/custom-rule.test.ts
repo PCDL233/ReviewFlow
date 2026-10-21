@@ -1,10 +1,6 @@
 import type { CodeContext, CustomRule, FileContext } from '@ai-review/shared';
 import { describe, expect, it } from 'vitest';
-import {
-  compileCustomRulePattern,
-  runCustomRules,
-  testCustomRuleOnSamples,
-} from '../src/index.js';
+import { compileCustomRulePattern, runCustomRules, testCustomRuleOnSamples } from '../src/index.js';
 
 /** 构造最小 FileContext：changedLines / stagedContent / snippet / signature 供规则引擎 */
 function makeFileContext(options: {
@@ -41,7 +37,10 @@ function makeFileContext(options: {
             name: 'example',
             params: [],
             isAsync: false,
-            range: { startLine: options.signatureStartLine, endLine: options.signatureStartLine + 5 },
+            range: {
+              startLine: options.signatureStartLine,
+              endLine: options.signatureStartLine + 5,
+            },
           },
     ragHits: [],
     changeType: 'feature',
@@ -225,9 +224,7 @@ describe('testCustomRuleOnSamples', () => {
   it('returns no hits for an invalid pattern', () => {
     const rule = makeRule({ pattern: '(' });
     expect(compileCustomRulePattern(rule)).toBeNull();
-    expect(
-      testCustomRuleOnSamples(rule, { diffText: '// TODO', source: '' }),
-    ).toEqual([]);
+    expect(testCustomRuleOnSamples(rule, { diffText: '// TODO', source: '' })).toEqual([]);
   });
 
   it('dedupes the same text hit across added and staged scopes (keeps real line)', () => {

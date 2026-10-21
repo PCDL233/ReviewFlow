@@ -32,13 +32,7 @@ export type HttpProviderOptions = {
 
 /** 模型调用失败的分类：决定是否重试以及报告中的可读原因 */
 export type LlmErrorKind =
-  | 'auth'
-  | 'rate-limit'
-  | 'timeout'
-  | 'network'
-  | 'http'
-  | 'bad-response'
-  | 'cancelled';
+  'auth' | 'rate-limit' | 'timeout' | 'network' | 'http' | 'bad-response' | 'cancelled';
 
 /** 带分类的模型调用错误（禁止静默吞错：调用方必须显式选择降级或失败） */
 export class LlmError extends Error {
@@ -135,11 +129,13 @@ export function normalizeUsage(
     if (typeof usage === 'object' && usage !== null) {
       const record = usage as Record<string, unknown>;
       const promptTokens = numberOrUndefined(record.prompt_tokens ?? record.input_tokens);
-      const completionTokens = numberOrUndefined(
-        record.completion_tokens ?? record.output_tokens,
-      );
+      const completionTokens = numberOrUndefined(record.completion_tokens ?? record.output_tokens);
       const totalTokens = numberOrUndefined(record.total_tokens);
-      if (promptTokens !== undefined || completionTokens !== undefined || totalTokens !== undefined) {
+      if (
+        promptTokens !== undefined ||
+        completionTokens !== undefined ||
+        totalTokens !== undefined
+      ) {
         const prompt = promptTokens ?? Math.ceil(promptChars / 4);
         const completion = completionTokens ?? Math.ceil(completionChars / 4);
         return {

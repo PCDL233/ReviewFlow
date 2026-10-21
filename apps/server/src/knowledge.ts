@@ -3,12 +3,7 @@ import { existsSync, statSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createOpenAI } from '@ai-sdk/openai';
 import { KnowledgeBase } from '@ai-review/rag';
-import type {
-  AiReviewConfig,
-  KnowledgeStatus,
-  RagHit,
-  RagQuery,
-} from '@ai-review/shared';
+import type { AiReviewConfig, KnowledgeStatus, RagHit, RagQuery } from '@ai-review/shared';
 import type { KnowledgeManager } from './app.js';
 
 /** 单个仓库的索引实例与状态 */

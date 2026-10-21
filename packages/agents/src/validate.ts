@@ -11,11 +11,7 @@ import type { ReviewDimension } from '@ai-review/llm';
  */
 
 export type RejectedFindingReason =
-  | 'unknown-file'
-  | 'invalid-range'
-  | 'out-of-range'
-  | 'schema'
-  | 'duplicate';
+  'unknown-file' | 'invalid-range' | 'out-of-range' | 'schema' | 'duplicate';
 
 export type FindingValidationResult = {
   findings: Finding[];

@@ -37,7 +37,12 @@ describe('LogStore', () => {
     expect(page1.logs).toHaveLength(2);
     expect(page1.page).toBe(1);
     // 倒序：最新的失败登录排最前
-    expect(page1.logs[0]).toMatchObject({ username: 'intruder', status: 'failed', reason: 'invalid-password', userId: null });
+    expect(page1.logs[0]).toMatchObject({
+      username: 'intruder',
+      status: 'failed',
+      reason: 'invalid-password',
+      userId: null,
+    });
 
     const page2 = logs.listLoginLogs({ page: 2, pageSize: 2 });
     expect(page2.logs).toHaveLength(2);

@@ -161,16 +161,16 @@ pnpm dev
 4. 选择审查模式（fast / full）与阻断阈值，点击「开始审查」，进度通过 SSE 实时刷新。
 5. 完成后点击「查看完整报告」。### 5. 安装 Git Hook（一次点击）
 
-1. 先确保目标仓库已启用 husky v9（`core.hooksPath`）：在仓库内执行一次 `pnpm exec husky init`。
-2. 进入 **管理后台 → Git Hook 与 CI**，选择仓库，点击「安装到此仓库」。
-3. 服务端会写入两个文件并签发令牌：
+6. 先确保目标仓库已启用 husky v9（`core.hooksPath`）：在仓库内执行一次 `pnpm exec husky init`。
+7. 进入 **管理后台 → Git Hook 与 CI**，选择仓库，点击「安装到此仓库」。
+8. 服务端会写入两个文件并签发令牌：
 
-| 文件 | 作用 |
-| --- | --- |
-| `.husky/pre-commit` | husky 入口，调用 Node 运行器 |
-| `.ai-review/hooks/pre-commit.mjs` | 真正发起审查、按退出码放行/阻断 |
-| `.ai-review-cache/hook-token` | 调用令牌（不进入版本库） |
-| `.gitignore` | 自动补齐 `.ai-review-cache/`、`.ai-review/`，防止令牌被 `git add -A` 提交 |
+| 文件                              | 作用                                                                      |
+| --------------------------------- | ------------------------------------------------------------------------- |
+| `.husky/pre-commit`               | husky 入口，调用 Node 运行器                                              |
+| `.ai-review/hooks/pre-commit.mjs` | 真正发起审查、按退出码放行/阻断                                           |
+| `.ai-review-cache/hook-token`     | 调用令牌（不进入版本库）                                                  |
+| `.gitignore`                      | 自动补齐 `.ai-review-cache/`、`.ai-review/`，防止令牌被 `git add -A` 提交 |
 
 之后每次 `git commit` 都会自动审查暂存区：发现达到阻断阈值的 Finding 时退出码为 1，阻止提交；服务不可达时退出码为 3，不阻断。
 
@@ -189,29 +189,29 @@ node apps/server/dist/main.js --port 8080 --db .ai-review-cache/reviews.db --web
 
 项目不提供命令行入口。所有能力都在 Dashboard 与 HTTP API 上：
 
-| 需求 | 入口 |
-| --- | --- |
-| 发起审查（四种范围） | 用户端「发起审查」 |
-| 查看历史 / 报告 / diff / 误报标记 | 「审查历史」→ 报告详情 |
-| 统计与趋势 | 「统计分析」 |
-| 生成 /.ai-review.yml | 后台「配置初始化」 |
-| 编辑模型、审查、静态分析、知识库、日志、服务端参数 | 后台「系统配置」「AI 模型」 |
-| 维护自定义审查规则（含试跑） | 后台「自定义规则」 |
-| 重建 RAG 索引 | 后台「知识库」 |
-| 在线试跑密钥扫描与复杂度检查 | 后台「分析工具」 |
-| 安装 Git Hook / 管理 CI 令牌 | 后台「Git Hook 与 CI」 |
-| 用户、角色、日志、指标 | 后台对应用户/角色/日志/指标页 |
+| 需求                                               | 入口                          |
+| -------------------------------------------------- | ----------------------------- |
+| 发起审查（四种范围）                               | 用户端「发起审查」            |
+| 查看历史 / 报告 / diff / 误报标记                  | 「审查历史」→ 报告详情        |
+| 统计与趋势                                         | 「统计分析」                  |
+| 生成 /.ai-review.yml                               | 后台「配置初始化」            |
+| 编辑模型、审查、静态分析、知识库、日志、服务端参数 | 后台「系统配置」「AI 模型」   |
+| 维护自定义审查规则（含试跑）                       | 后台「自定义规则」            |
+| 重建 RAG 索引                                      | 后台「知识库」                |
+| 在线试跑密钥扫描与复杂度检查                       | 后台「分析工具」              |
+| 安装 Git Hook / 管理 CI 令牌                       | 后台「Git Hook 与 CI」        |
+| 用户、角色、日志、指标                             | 后台对应用户/角色/日志/指标页 |
 
 ### 审查 API（供 Hook、CI 与脚本使用）
 
-| 端点 | 鉴权 | 说明 |
-| --- | --- | --- |
-| `POST /api/reviews` | 会话 Cookie | 异步发起审查，返回 `202` + `reviewId`；进度走 SSE |
-| `GET /api/reviews/:id/events` | 会话 Cookie | 实时进度（SSE） |
-| `POST /api/hooks/review` | `Authorization: Bearer <token>` | **同步**审查，响应携带 `exitCode`，供 Hook / CI 判定 |
-| `GET /api/repos` | 会话 Cookie | 仓库发现（扫描允许根目录 + 历史审查记录） |
-| `GET /api/repos/{status,branches,commits}` | 会话 Cookie | 仓库工作区状态、分支、提交列表 |
-| `POST /api/mcp` | Bearer 令牌 | MCP over Streamable HTTP（需在系统配置中开启） |
+| 端点                                       | 鉴权                            | 说明                                                 |
+| ------------------------------------------ | ------------------------------- | ---------------------------------------------------- |
+| `POST /api/reviews`                        | 会话 Cookie                     | 异步发起审查，返回 `202` + `reviewId`；进度走 SSE    |
+| `GET /api/reviews/:id/events`              | 会话 Cookie                     | 实时进度（SSE）                                      |
+| `POST /api/hooks/review`                   | `Authorization: Bearer <token>` | **同步**审查，响应携带 `exitCode`，供 Hook / CI 判定 |
+| `GET /api/repos`                           | 会话 Cookie                     | 仓库发现（扫描允许根目录 + 历史审查记录）            |
+| `GET /api/repos/{status,branches,commits}` | 会话 Cookie                     | 仓库工作区状态、分支、提交列表                       |
+| `POST /api/mcp`                            | Bearer 令牌                     | MCP over Streamable HTTP（需在系统配置中开启）       |
 
 `POST /api/reviews` 与 `POST /api/hooks/review` 的请求体：
 
@@ -227,23 +227,23 @@ node apps/server/dist/main.js --port 8080 --db .ai-review-cache/reviews.db --web
 
 `target` 取值与必填参数：
 
-| target | 必填 | 含义 |
-| --- | --- | --- |
-| `staged`（默认） | — | index 与 HEAD 的差异 |
-| `worktree` | — | HEAD 与工作区磁盘的差异 |
-| `commit` | `commit` | 单个提交相对其父提交的差异 |
-| `range` | `base`（`head` 可选，默认 HEAD） | `base...head` 区间 |
+| target           | 必填                             | 含义                       |
+| ---------------- | -------------------------------- | -------------------------- |
+| `staged`（默认） | —                                | index 与 HEAD 的差异       |
+| `worktree`       | —                                | HEAD 与工作区磁盘的差异    |
+| `commit`         | `commit`                         | 单个提交相对其父提交的差异 |
+| `range`          | `base`（`head` 可选，默认 HEAD） | `base...head` 区间         |
 
 引用（分支 / SHA / 相对引用）会经过白名单校验：以 `-` 开头的值一律拒绝，避免 git 参数注入。
 
 Hook / CI 响应的稳定退出码（`exitCode` 字段，调用方脚本据此决定是否放行）：
 
-| 退出码 | 含义 |
-| --- | --- |
-| `0` | 没有发现达到阻断阈值的 Finding |
-| `1` | 存在达到 `blockOn` 级别的发现，阻断提交或 CI 步骤 |
-| `2` | 配置或环境错误，例如配置校验失败、Git 仓库无效或参数缺失 |
-| `3` | 审查超时或被取消；默认不作为缺陷阻断提交 |
+| 退出码 | 含义                                                     |
+| ------ | -------------------------------------------------------- |
+| `0`    | 没有发现达到阻断阈值的 Finding                           |
+| `1`    | 存在达到 `blockOn` 级别的发现，阻断提交或 CI 步骤        |
+| `2`    | 配置或环境错误，例如配置校验失败、Git 仓库无效或参数缺失 |
+| `3`    | 审查超时或被取消；默认不作为缺陷阻断提交                 |
 
 ### 知识库索引
 
@@ -263,15 +263,15 @@ Hook / CI 响应的稳定退出码（`exitCode` 字段，调用方脚本据此�
 > 生效优先级：环境变量 > 配置文件 server 段 > 默认值——部署层显式设置的环境变量仍可覆盖 web 保存的值；
 > 服务启动时读取一次，保存后需重启服务生效。
 
-| 变量                         | 默认值       | 说明                                                                                                  |
-| ---------------------------- | ------------ | ----------------------------------------------------------------------------------------------------- |
-| `AI_REVIEW_ALLOWED_ROOTS`    | `cwd`        | 允许发起审查的仓库根目录白名单，多个用路径分隔符分隔（Windows `;` / POSIX `:`）；越界路径一律 400     |
-| `AI_REVIEW_MAX_CONCURRENT`   | `3`          | 并行审查任务上限（信号量排队，防压垮 LLM 配额）                                                       |
-| `AI_REVIEW_COOKIE_SECURE`    | 关           | `true` 时强制会话 Cookie 携带 `Secure`（NODE_ENV=production 下自动开启）                               |
-| `AI_REVIEW_ALLOW_REGISTER`   | 关           | `true` 时放开开放注册；缺省仅在无任何用户时允许（首个管理员引导后自动关闭）                            |
-| `AI_REVIEW_TRUST_PROXY`      | 关           | 反向代理（nginx 等）部署时开启：限流改用 `X-Forwarded-For` 末值识别真实客户端 IP，避免全员共享代理 IP 的限流桶 |
-| `AI_REVIEW_OLLAMA_MODEL`     | `qwen3-coder:30b` | Ollama 回退模型（云端 provider 不可用时的本地兜底）                                          |
-| `AI_REVIEW_API_KEY`          | 无           | 模型 API Key，配合配置文件的 `${AI_REVIEW_API_KEY}` 引用；切勿写入仓库（仅可通过环境变量提供）        |
+| 变量                       | 默认值            | 说明                                                                                                           |
+| -------------------------- | ----------------- | -------------------------------------------------------------------------------------------------------------- |
+| `AI_REVIEW_ALLOWED_ROOTS`  | `cwd`             | 允许发起审查的仓库根目录白名单，多个用路径分隔符分隔（Windows `;` / POSIX `:`）；越界路径一律 400              |
+| `AI_REVIEW_MAX_CONCURRENT` | `3`               | 并行审查任务上限（信号量排队，防压垮 LLM 配额）                                                                |
+| `AI_REVIEW_COOKIE_SECURE`  | 关                | `true` 时强制会话 Cookie 携带 `Secure`（NODE_ENV=production 下自动开启）                                       |
+| `AI_REVIEW_ALLOW_REGISTER` | 关                | `true` 时放开开放注册；缺省仅在无任何用户时允许（首个管理员引导后自动关闭）                                    |
+| `AI_REVIEW_TRUST_PROXY`    | 关                | 反向代理（nginx 等）部署时开启：限流改用 `X-Forwarded-For` 末值识别真实客户端 IP，避免全员共享代理 IP 的限流桶 |
+| `AI_REVIEW_OLLAMA_MODEL`   | `qwen3-coder:30b` | Ollama 回退模型（云端 provider 不可用时的本地兜底）                                                            |
+| `AI_REVIEW_API_KEY`        | 无                | 模型 API Key，配合配置文件的 `${AI_REVIEW_API_KEY}` 引用；切勿写入仓库（仅可通过环境变量提供）                 |
 
 Docker 镜像默认 `NODE_ENV=production`，会话 Cookie 自动启用 `Secure`；若在 http 反向代理后部署，请同时设置 `AI_REVIEW_COOKIE_SECURE=false` 并配合 `AI_REVIEW_TRUST_PROXY=true`。
 
@@ -307,14 +307,14 @@ Docker 镜像默认 `NODE_ENV=production`，会话 Cookie 自动启用 `Secure`�
 ```yaml
 llm:
   provider: anthropic # anthropic | openai | deepseek | zhipu | moonshot | dashscope | volcengine | minimax | ollama | mock
-  runtime: ai-sdk     # ai-sdk（默认）| http（手写兼容回退）
+  runtime: ai-sdk # ai-sdk（默认）| http（手写兼容回退）
   model: claude-sonnet-5
   apiKey: ${AI_REVIEW_API_KEY}
   maxTokensPerReview: 50000
   temperature: 0.1
   mockFixturesDir: .ai-review-cache/llm-fixtures
-  timeoutMs: 60000      # 单次模型请求超时
-  retries: 1            # 仅 429/5xx/网络/超时重试
+  timeoutMs: 60000 # 单次模型请求超时
+  retries: 1 # 仅 429/5xx/网络/超时重试
   onUnavailable: degrade # degrade：退回 mock 但报告标注 unavailable；fail：直接失败
   structuredOutput: false # 结构化输出（需模型支持 JSON schema；与 ReAct 工具互斥）
 
@@ -346,11 +346,11 @@ staticAnalysis:
 # 审计日志（登录日志 + 操作日志）：SQLite 落库供后台查询，同时输出控制台并按日滚动归档；
 # 保存后需重启服务生效（基础设施配置，不随审查热重读）
 logging:
-  enabled: true   # 总开关：关闭后不再写入新日志（存量日志仍可查询）
-  console: true   # 输出到控制台（单行可读格式）
-  file: true      # 写文件归档（JSON Lines，按日滚动）
-  dir: logs       # 日志目录：<dir>/ai-review-login-YYYY-MM-DD.log 与 -operation- 同名
-  maxDays: 30     # 超过保留天数的旧日志文件自动清理
+  enabled: true # 总开关：关闭后不再写入新日志（存量日志仍可查询）
+  console: true # 输出到控制台（单行可读格式）
+  file: true # 写文件归档（JSON Lines，按日滚动）
+  dir: logs # 日志目录：<dir>/ai-review-login-YYYY-MM-DD.log 与 -operation- 同名
+  maxDays: 30 # 超过保留天数的旧日志文件自动清理
 
 # 用户自定义审查规则（管理员在后台维护，随配置生效；匹配范围：added 新增行 / staged 文件全文 / snippet 函数片段）
 # 保存后下一次审查立即生效（服务端热重读，无需重启）；存在启用规则时 custom_rule_check 自动参与，无需在 enabledTools 单独开启。
@@ -371,14 +371,14 @@ customRules:
 # 生效优先级：环境变量 > 此处配置 > 默认值（部署层环境变量仍可覆盖 web 保存的值）。
 # 属基础设施配置，服务启动时读取一次，保存后需重启服务生效。
 server:
-  allowedRoots: []           # 允许发起审查的仓库根目录白名单；空 = 仅当前工作目录
-  maxConcurrent: 3           # 并行审查任务上限（信号量排队）
-  cookieSecure: false        # 强制会话 Cookie Secure（NODE_ENV=production 下自动开启）
-  allowRegister: false       # 放开开放注册（缺省仅在无任何用户时允许首账号引导）
-  trustProxy: false          # 反向代理部署时信任 X-Forwarded-For 识别真实 IP
-  ollamaModel: qwen3-coder:30b  # Ollama 回退模型（云端不可用时的本地兜底）
-  hookTimeoutMs: 120000      # Hook/CI 同步审查超时；超时返回退出码 3（不阻断）
-  mcpEnabled: false          # 是否暴露 /api/mcp（MCP over Streamable HTTP）
+  allowedRoots: [] # 允许发起审查的仓库根目录白名单；空 = 仅当前工作目录
+  maxConcurrent: 3 # 并行审查任务上限（信号量排队）
+  cookieSecure: false # 强制会话 Cookie Secure（NODE_ENV=production 下自动开启）
+  allowRegister: false # 放开开放注册（缺省仅在无任何用户时允许首账号引导）
+  trustProxy: false # 反向代理部署时信任 X-Forwarded-For 识别真实 IP
+  ollamaModel: qwen3-coder:30b # Ollama 回退模型（云端不可用时的本地兜底）
+  hookTimeoutMs: 120000 # Hook/CI 同步审查超时；超时返回退出码 3（不阻断）
+  mcpEnabled: false # 是否暴露 /api/mcp（MCP over Streamable HTTP）
 
 report:
   format: markdown # markdown | html | json（导出默认格式）
@@ -465,60 +465,60 @@ Ollama 的默认模型回退为 `qwen3-coder:30b`，可用 `AI_REVIEW_OLLAMA_MOD
 
 ### 审查与统计
 
-| 路由                                                  | 方法   | 说明                                                 |
-| ----------------------------------------------------- | ------ | ---------------------------------------------------- |
+| 路由                                                  | 方法   | 说明                                                                                                        |
+| ----------------------------------------------------- | ------ | ----------------------------------------------------------------------------------------------------------- |
 | `/api/reviews`                                        | POST   | 发起审查，返回 `202 + { reviewId }`；`target/base/commit` 定义审查范围，`mode`/`blockOn` 未传时回退系统配置 |
-| `/api/reviews`                                        | GET    | 审查历史列表；普通用户仅返回本人记录，支持查询和分页 |
-| `/api/reviews/:id`                                    | GET    | 五段式报告详情与行级 findings                        |
-| `/api/reviews/:id/diff`                               | GET    | 获取审查使用的 diff                                  |
-| `/api/reviews/:id/events`                             | GET    | 审查进度 SSE                                         |
-| `/api/reviews/:id/rerun`                              | POST   | 重新执行可访问的审查，返回 `202 + { reviewId }`      |
-| `/api/reviews/:id/cancel`                             | POST   | 取消正在运行的审查                                   |
-| `/api/reviews/:id/export?format=markdown\|html\|json` | GET    | 导出报告；未指定 `format` 时使用 `report.format`      |
-| `/api/reviews/:id`                                    | DELETE | 删除可访问的审查记录                                 |
-| `/api/findings/:id`                                   | PATCH  | 更新误报标记，请求体 `{ "isFalsePositive": true }`   |
-| `/api/stats`                                          | GET    | 统计聚合；普通用户仅统计本人数据                     |
+| `/api/reviews`                                        | GET    | 审查历史列表；普通用户仅返回本人记录，支持查询和分页                                                        |
+| `/api/reviews/:id`                                    | GET    | 五段式报告详情与行级 findings                                                                               |
+| `/api/reviews/:id/diff`                               | GET    | 获取审查使用的 diff                                                                                         |
+| `/api/reviews/:id/events`                             | GET    | 审查进度 SSE                                                                                                |
+| `/api/reviews/:id/rerun`                              | POST   | 重新执行可访问的审查，返回 `202 + { reviewId }`                                                             |
+| `/api/reviews/:id/cancel`                             | POST   | 取消正在运行的审查                                                                                          |
+| `/api/reviews/:id/export?format=markdown\|html\|json` | GET    | 导出报告；未指定 `format` 时使用 `report.format`                                                            |
+| `/api/reviews/:id`                                    | DELETE | 删除可访问的审查记录                                                                                        |
+| `/api/findings/:id`                                   | PATCH  | 更新误报标记，请求体 `{ "isFalsePositive": true }`                                                          |
+| `/api/stats`                                          | GET    | 统计聚合；普通用户仅统计本人数据                                                                            |
 
 ### 管理与运维（仅 admin）
 
-| 路由                                  | 方法   | 说明                                          |
-| ------------------------------------- | ------ | --------------------------------------------- |
-| `/api/admin/overview`                 | GET    | 系统概览、缓存摘要和最近失败记录              |
-| `/api/admin/users`                    | GET    | 用户列表                                      |
-| `/api/admin/users/:id`                | PATCH  | 修改用户角色或 active/disabled 状态           |
-| `/api/admin/users/:id/reset-password` | POST   | 重置密码并返回新随机密码；旧会话立即失效      |
-| `/api/admin/users/:id`                | DELETE | 删除其他用户及其会话                          |
-| `/api/admin/config`                   | GET    | 读取已掩码的项目配置                          |
-| `/api/admin/config`                   | PUT    | 更新项目配置；`apiKey: "********"` 保留原密钥 |
-| `/api/admin/knowledge`                | GET    | 查看知识库索引状态                            |
-| `/api/admin/knowledge/reindex`        | POST   | 异步接受知识库增量重建任务，返回 `202`        |
-| `/api/admin/rules`                    | GET    | 自定义审查规则列表                            |
-| `/api/admin/rules`                    | PUT    | 整体保存自定义审查规则（随配置持久化）        |
-| `/api/admin/rules/test`               | POST   | 试跑规则：`{ rule, sampleDiffText?, sampleSource? }` 返回命中行 |
-| `/api/admin/login-logs`               | GET    | 登录日志（分页 + 日期/状态/动作/用户名筛选；权限 `/admin/login-logs`） |
+| 路由                                  | 方法   | 说明                                                                     |
+| ------------------------------------- | ------ | ------------------------------------------------------------------------ |
+| `/api/admin/overview`                 | GET    | 系统概览、缓存摘要和最近失败记录                                         |
+| `/api/admin/users`                    | GET    | 用户列表                                                                 |
+| `/api/admin/users/:id`                | PATCH  | 修改用户角色或 active/disabled 状态                                      |
+| `/api/admin/users/:id/reset-password` | POST   | 重置密码并返回新随机密码；旧会话立即失效                                 |
+| `/api/admin/users/:id`                | DELETE | 删除其他用户及其会话                                                     |
+| `/api/admin/config`                   | GET    | 读取已掩码的项目配置                                                     |
+| `/api/admin/config`                   | PUT    | 更新项目配置；`apiKey: "********"` 保留原密钥                            |
+| `/api/admin/knowledge`                | GET    | 查看知识库索引状态                                                       |
+| `/api/admin/knowledge/reindex`        | POST   | 异步接受知识库增量重建任务，返回 `202`                                   |
+| `/api/admin/rules`                    | GET    | 自定义审查规则列表                                                       |
+| `/api/admin/rules`                    | PUT    | 整体保存自定义审查规则（随配置持久化）                                   |
+| `/api/admin/rules/test`               | POST   | 试跑规则：`{ rule, sampleDiffText?, sampleSource? }` 返回命中行          |
+| `/api/admin/login-logs`               | GET    | 登录日志（分页 + 日期/状态/动作/用户名筛选；权限 `/admin/login-logs`）   |
 | `/api/admin/operation-logs`           | GET    | 操作日志（分页 + 日期/状态/动作/资源筛选；权限 `/admin/operation-logs`） |
-| `/api/admin/hooks/tokens`             | GET    | Hook / CI 令牌列表（不含明文；权限 `/admin/hook`） |
-| `/api/admin/hooks/tokens`             | POST   | 签发令牌，返回一次明文 `{ token, plainText }` |
-| `/api/admin/hooks/tokens/:id`         | DELETE | 吊销令牌 |
-| `/api/admin/hooks/script`             | GET    | 获取 hook 脚本内容（`shell` + `runner` 及相对路径） |
-| `/api/admin/hooks/install`            | POST   | 在仓库内写盘安装 hook 并落令牌文件 |
-| `/api/mcp`                            | POST   | MCP over Streamable HTTP（需 `server.mcpEnabled` + Bearer 令牌） |
-| `/metrics`                            | GET    | Prometheus 文本格式指标                       |
+| `/api/admin/hooks/tokens`             | GET    | Hook / CI 令牌列表（不含明文；权限 `/admin/hook`）                       |
+| `/api/admin/hooks/tokens`             | POST   | 签发令牌，返回一次明文 `{ token, plainText }`                            |
+| `/api/admin/hooks/tokens/:id`         | DELETE | 吊销令牌                                                                 |
+| `/api/admin/hooks/script`             | GET    | 获取 hook 脚本内容（`shell` + `runner` 及相对路径）                      |
+| `/api/admin/hooks/install`            | POST   | 在仓库内写盘安装 hook 并落令牌文件                                       |
+| `/api/mcp`                            | POST   | MCP over Streamable HTTP（需 `server.mcpEnabled` + Bearer 令牌）         |
+| `/metrics`                            | GET    | Prometheus 文本格式指标                                                  |
 
 ### Hook / CI（Bearer 令牌）
 
-| 路由                  | 方法 | 说明 |
-| --------------------- | ---- | ---- |
-| `/api/hooks/review`   | POST | 同步执行一次审查，响应含 `exitCode`（0/1/2/3）；超时返回 3 且不阻断 |
+| 路由                | 方法 | 说明                                                                |
+| ------------------- | ---- | ------------------------------------------------------------------- |
+| `/api/hooks/review` | POST | 同步执行一次审查，响应含 `exitCode`（0/1/2/3）；超时返回 3 且不阻断 |
 
 ### 仓库发现
 
-| 路由                       | 方法 | 说明 |
-| -------------------------- | ---- | ---- |
-| `/api/repos`               | GET  | 允许根目录扫描结果 + 历史审查仓库 |
-| `/api/repos/status`        | GET  | 分支、HEAD、暂存/未暂存/未跟踪计数 |
-| `/api/repos/branches`      | GET  | 本地分支列表（按最近提交排序） |
-| `/api/repos/commits`       | GET  | 提交列表（`ref` 指定起点，默认 HEAD） |
+| 路由                  | 方法 | 说明                                  |
+| --------------------- | ---- | ------------------------------------- |
+| `/api/repos`          | GET  | 允许根目录扫描结果 + 历史审查仓库     |
+| `/api/repos/status`   | GET  | 分支、HEAD、暂存/未暂存/未跟踪计数    |
+| `/api/repos/branches` | GET  | 本地分支列表（按最近提交排序）        |
+| `/api/repos/commits`  | GET  | 提交列表（`ref` 指定起点，默认 HEAD） |
 
 SSE 事件通过 `event` + JSON `data` 发送：
 
@@ -602,15 +602,15 @@ pnpm clean:dry   # 仅预览将删除的构建产物
 
 ## 故障排查
 
-| 现象                                    | 处理方式                                                                                                    |
-| --------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `Cannot find .../dist` 或服务启动即退出 | 先运行 `pnpm build`；`pnpm dev` 会自动按 Turbo 依赖图构建，但直接运行 server 不会                           |
-| 8080/5173 已被占用                      | 启动服务时用 `--port <port>` 修改 API 端口；开发期同步调整 `apps/web/vite.config.ts` 的代理目标            |
-| `better-sqlite3` 安装失败               | 使用 Node.js 22，并重新执行 `pnpm install`；Linux/alpine 构建需有 `python3`、`make`、`g++`                  |
-| 云端 provider 报 API Key 错误           | 确认 `AI_REVIEW_API_KEY` 已导出，且 `.ai-review.yml` 使用 `${AI_REVIEW_API_KEY}`；不要把 Key 写进仓库       |
-| 选择 Ollama 但连接失败                  | 启动 Ollama，确认默认 `http://127.0.0.1:11434/v1` 可访问，并准备模型；也可设置 `AI_REVIEW_OLLAMA_BASE_URL`  |
+| 现象                                    | 处理方式                                                                                                       |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `Cannot find .../dist` 或服务启动即退出 | 先运行 `pnpm build`；`pnpm dev` 会自动按 Turbo 依赖图构建，但直接运行 server 不会                              |
+| 8080/5173 已被占用                      | 启动服务时用 `--port <port>` 修改 API 端口；开发期同步调整 `apps/web/vite.config.ts` 的代理目标                |
+| `better-sqlite3` 安装失败               | 使用 Node.js 22，并重新执行 `pnpm install`；Linux/alpine 构建需有 `python3`、`make`、`g++`                     |
+| 云端 provider 报 API Key 错误           | 确认 `AI_REVIEW_API_KEY` 已导出，且 `.ai-review.yml` 使用 `${AI_REVIEW_API_KEY}`；不要把 Key 写进仓库          |
+| 选择 Ollama 但连接失败                  | 启动 Ollama，确认默认 `http://127.0.0.1:11434/v1` 可访问，并准备模型；也可设置 `AI_REVIEW_OLLAMA_BASE_URL`     |
 | 知识库重建失败                          | 确认 embedding 服务可用、`rag.knowledgeBasePaths` 不为空，并检查 `AI_REVIEW_EMBEDDING_BASE_URL` 与模型是否匹配 |
-| Hook 提交时报「未找到令牌」             | 在后台「Git Hook 与 CI」重新安装；确认 `.ai-review-cache/hook-token` 存在且未被清理                        |
-| Dashboard 请求 401/403                  | 先登录；普通用户不能访问 `/api/admin/*` 或 `/metrics`，被禁用用户需要管理员恢复状态                         |
-| 前端打开但 API 请求失败                 | 开发环境确认 server 在 8080；生产环境使用 `--web-dist apps/web/dist`，不要把 Vite 开发代理配置当作生产代理  |
-| Docker 重建后数据看似丢失               | 确认使用 `docker compose up`，不要删除 `review-data` volume；检查 `/app/.ai-review-cache` 挂载状态          |
+| Hook 提交时报「未找到令牌」             | 在后台「Git Hook 与 CI」重新安装；确认 `.ai-review-cache/hook-token` 存在且未被清理                            |
+| Dashboard 请求 401/403                  | 先登录；普通用户不能访问 `/api/admin/*` 或 `/metrics`，被禁用用户需要管理员恢复状态                            |
+| 前端打开但 API 请求失败                 | 开发环境确认 server 在 8080；生产环境使用 `--web-dist apps/web/dist`，不要把 Vite 开发代理配置当作生产代理     |
+| Docker 重建后数据看似丢失               | 确认使用 `docker compose up`，不要删除 `review-data` volume；检查 `/app/.ai-review-cache` 挂载状态             |

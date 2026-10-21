@@ -402,8 +402,7 @@ export class ReviewStore {
               fingerprint: finding.fingerprint ?? null,
               origin: finding.origin ?? null,
               lineScope: finding.lineScope ?? null,
-              agents:
-                finding.agents === undefined ? null : JSON.stringify(finding.agents),
+              agents: finding.agents === undefined ? null : JSON.stringify(finding.agents),
               status: finding.status ?? 'open',
               ruleId: finding.ruleId ?? null,
             })),
@@ -520,17 +519,17 @@ export class ReviewStore {
    * 读取报告状态（方案 14：SSE 晚连接兜底仅需状态，避免解析完整报告与 findings）。
    * @returns 报告不存在返回 undefined
    */
-  public getReportStatus(
-    reviewId: string,
-  ): {
-    status: 'completed' | 'failed' | 'cancelled';
-    errorMessage: string | null;
-    riskScore: number;
-    blockerCount: number;
-    warningCount: number;
-    nitCount: number;
-    blockOn: 'BLOCKER' | 'WARNING' | 'NIT' | null;
-  } | undefined {
+  public getReportStatus(reviewId: string):
+    | {
+        status: 'completed' | 'failed' | 'cancelled';
+        errorMessage: string | null;
+        riskScore: number;
+        blockerCount: number;
+        warningCount: number;
+        nitCount: number;
+        blockOn: 'BLOCKER' | 'WARNING' | 'NIT' | null;
+      }
+    | undefined {
     const row = this.db
       .select({
         status: reviews.status,
@@ -618,10 +617,7 @@ export class ReviewStore {
     const transaction = this.sqlite.transaction(() => {
       this.db.delete(llmCalls).where(eq(llmCalls.reviewId, reviewId)).run();
       this.db.delete(reviewStages).where(eq(reviewStages.reviewId, reviewId)).run();
-      this.db
-        .delete(reviewDecisionEvents)
-        .where(eq(reviewDecisionEvents.reviewId, reviewId))
-        .run();
+      this.db.delete(reviewDecisionEvents).where(eq(reviewDecisionEvents.reviewId, reviewId)).run();
       // 评论通过 finding_id 间接关联审查；先按子查询清理，避免外键约束阻止删除
       this.sqlite
         .prepare(
@@ -752,10 +748,7 @@ export class ReviewStore {
     findingId: number,
     patch: { status?: FindingStatus; isFalsePositive?: boolean },
   ): boolean {
-    const falsePositive =
-      patch.status === 'false_positive'
-        ? true
-        : patch.isFalsePositive;
+    const falsePositive = patch.status === 'false_positive' ? true : patch.isFalsePositive;
     const result = this.db
       .update(findings)
       .set({
@@ -1168,10 +1161,7 @@ export class ReviewStore {
    * @param reviewId 审查 id
    * @param status completed / failed / cancelled
    */
-  public setReviewJobStatus(
-    reviewId: string,
-    status: 'completed' | 'failed' | 'cancelled',
-  ): void {
+  public setReviewJobStatus(reviewId: string, status: 'completed' | 'failed' | 'cancelled'): void {
     this.sqlite
       .prepare('UPDATE review_jobs SET status = ?, updated_at = ? WHERE review_id = ?')
       .run(status, new Date().toISOString(), reviewId);

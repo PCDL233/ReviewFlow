@@ -173,26 +173,68 @@ export function registerAuthRoutes(app: Hono<AppEnv>, deps: AuthDeps): void {
         ? deps.registrationOpen
         : process.env.AI_REVIEW_ALLOW_REGISTER === 'true' || deps.users.countUsers() === 0;
     if (!openRegistration) {
-      audit?.login({ username, action: 'register', status: 'failed', reason: 'registration-closed', ip, userAgent });
-      audit?.operation({ username, action: 'register', resource: 'auth', status: 'failed', reason: 'registration-closed', ip, userAgent });
-      return c.json(
-        { error: '注册已关闭，请联系管理员开通账号' },
-        403,
-      );
+      audit?.login({
+        username,
+        action: 'register',
+        status: 'failed',
+        reason: 'registration-closed',
+        ip,
+        userAgent,
+      });
+      audit?.operation({
+        username,
+        action: 'register',
+        resource: 'auth',
+        status: 'failed',
+        reason: 'registration-closed',
+        ip,
+        userAgent,
+      });
+      return c.json({ error: '注册已关闭，请联系管理员开通账号' }, 403);
     }
     let user: SafeUser;
     try {
       user = deps.users.createUser({ username, passwordHash: await hashPassword(password) });
     } catch (e) {
       if (e instanceof StoreError) {
-        audit?.login({ username, action: 'register', status: 'failed', reason: 'username-exists', ip, userAgent });
-        audit?.operation({ username, action: 'register', resource: 'auth', status: 'failed', reason: 'username-exists', ip, userAgent });
+        audit?.login({
+          username,
+          action: 'register',
+          status: 'failed',
+          reason: 'username-exists',
+          ip,
+          userAgent,
+        });
+        audit?.operation({
+          username,
+          action: 'register',
+          resource: 'auth',
+          status: 'failed',
+          reason: 'username-exists',
+          ip,
+          userAgent,
+        });
         return c.json({ error: e.message }, 409);
       }
       throw e;
     }
-    audit?.login({ userId: user.id, username, action: 'register', status: 'success', ip, userAgent });
-    audit?.operation({ userId: user.id, username, action: 'register', resource: 'auth', status: 'success', ip, userAgent });
+    audit?.login({
+      userId: user.id,
+      username,
+      action: 'register',
+      status: 'success',
+      ip,
+      userAgent,
+    });
+    audit?.operation({
+      userId: user.id,
+      username,
+      action: 'register',
+      resource: 'auth',
+      status: 'success',
+      ip,
+      userAgent,
+    });
     issueSessionCookie(deps, c, user.id);
     return c.json(AuthResponseSchema.parse({ user }), 201);
   });
@@ -215,19 +257,61 @@ export function registerAuthRoutes(app: Hono<AppEnv>, deps: AuthDeps): void {
     if (user === undefined || !passwordOk) {
       // 失败登录同样入库（安全审计）：内部记录精确原因供分析，对外统一提示不泄露用户名
       const reason = user === undefined ? 'user-not-found' : 'invalid-password';
-      audit?.login({ userId: user?.id ?? null, username, action: 'login', status: 'failed', reason, ip, userAgent });
-      audit?.operation({ userId: user?.id ?? null, username, action: 'login', resource: 'auth', status: 'failed', reason, ip, userAgent });
+      audit?.login({
+        userId: user?.id ?? null,
+        username,
+        action: 'login',
+        status: 'failed',
+        reason,
+        ip,
+        userAgent,
+      });
+      audit?.operation({
+        userId: user?.id ?? null,
+        username,
+        action: 'login',
+        resource: 'auth',
+        status: 'failed',
+        reason,
+        ip,
+        userAgent,
+      });
       return c.json({ error: '用户名或密码错误' }, 401);
     }
     if (user.status === 'disabled') {
-      audit?.login({ userId: user.id, username, action: 'login', status: 'failed', reason: 'account-disabled', ip, userAgent });
-      audit?.operation({ userId: user.id, username, action: 'login', resource: 'auth', status: 'failed', reason: 'account-disabled', ip, userAgent });
+      audit?.login({
+        userId: user.id,
+        username,
+        action: 'login',
+        status: 'failed',
+        reason: 'account-disabled',
+        ip,
+        userAgent,
+      });
+      audit?.operation({
+        userId: user.id,
+        username,
+        action: 'login',
+        resource: 'auth',
+        status: 'failed',
+        reason: 'account-disabled',
+        ip,
+        userAgent,
+      });
       return c.json({ error: '账号已被禁用' }, 403);
     }
     issueSessionCookie(deps, c, user.id);
     deps.users.touchLastLogin(user.id);
     audit?.login({ userId: user.id, username, action: 'login', status: 'success', ip, userAgent });
-    audit?.operation({ userId: user.id, username, action: 'login', resource: 'auth', status: 'success', ip, userAgent });
+    audit?.operation({
+      userId: user.id,
+      username,
+      action: 'login',
+      resource: 'auth',
+      status: 'success',
+      ip,
+      userAgent,
+    });
     return c.json(AuthResponseSchema.parse({ user }));
   });
 
@@ -240,8 +324,23 @@ export function registerAuthRoutes(app: Hono<AppEnv>, deps: AuthDeps): void {
     if (token !== undefined) deps.users.deleteSession(token);
     deleteCookie(c, SESSION_COOKIE, { path: '/' });
     const username = user?.username ?? 'unknown';
-    deps.audit?.login({ userId: user?.id ?? null, username, action: 'logout', status: 'success', ip, userAgent });
-    deps.audit?.operation({ userId: user?.id ?? null, username, action: 'logout', resource: 'auth', status: 'success', ip, userAgent });
+    deps.audit?.login({
+      userId: user?.id ?? null,
+      username,
+      action: 'logout',
+      status: 'success',
+      ip,
+      userAgent,
+    });
+    deps.audit?.operation({
+      userId: user?.id ?? null,
+      username,
+      action: 'logout',
+      resource: 'auth',
+      status: 'success',
+      ip,
+      userAgent,
+    });
     return c.json({ loggedOut: true });
   });
 
@@ -261,16 +360,48 @@ export function registerAuthRoutes(app: Hono<AppEnv>, deps: AuthDeps): void {
       const audit = deps.audit;
       const storedHash = deps.users.getPasswordHash(user.id);
       if (storedHash === undefined || !(await verifyPassword(oldPassword, storedHash))) {
-        audit?.login({ userId: user.id, username: user.username, action: 'change_password', status: 'failed', reason: 'invalid-old-password', ip, userAgent });
-        audit?.operation({ userId: user.id, username: user.username, action: 'change_password', resource: 'auth', status: 'failed', reason: 'invalid-old-password', ip, userAgent });
+        audit?.login({
+          userId: user.id,
+          username: user.username,
+          action: 'change_password',
+          status: 'failed',
+          reason: 'invalid-old-password',
+          ip,
+          userAgent,
+        });
+        audit?.operation({
+          userId: user.id,
+          username: user.username,
+          action: 'change_password',
+          resource: 'auth',
+          status: 'failed',
+          reason: 'invalid-old-password',
+          ip,
+          userAgent,
+        });
         return c.json({ error: '当前密码不正确' }, 400);
       }
       deps.users.resetPassword(user.id, await hashPassword(newPassword));
       // 旧密码可能已泄露：改密后吊销全部会话，强制所有端重新登录
       deps.users.deleteSessionsForUser(user.id);
       deleteCookie(c, SESSION_COOKIE, { path: '/' });
-      audit?.login({ userId: user.id, username: user.username, action: 'change_password', status: 'success', ip, userAgent });
-      audit?.operation({ userId: user.id, username: user.username, action: 'change_password', resource: 'auth', status: 'success', ip, userAgent });
+      audit?.login({
+        userId: user.id,
+        username: user.username,
+        action: 'change_password',
+        status: 'success',
+        ip,
+        userAgent,
+      });
+      audit?.operation({
+        userId: user.id,
+        username: user.username,
+        action: 'change_password',
+        resource: 'auth',
+        status: 'success',
+        ip,
+        userAgent,
+      });
       return c.json({ changed: true });
     },
   );

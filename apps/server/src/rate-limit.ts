@@ -31,8 +31,7 @@ export interface RateLimitOptions {
  *   单层代理会把真实客户端 IP 追加在末尾，首值可被客户端伪造
  */
 export function getClientIp(c: Context, trustProxy?: boolean): string {
-  const useForwarded =
-    trustProxy ?? process.env.AI_REVIEW_TRUST_PROXY === 'true';
+  const useForwarded = trustProxy ?? process.env.AI_REVIEW_TRUST_PROXY === 'true';
   if (useForwarded) {
     const forwarded = c.req.header('x-forwarded-for');
     if (forwarded !== undefined && forwarded !== '') {

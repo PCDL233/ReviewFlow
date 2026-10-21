@@ -19,7 +19,11 @@ function makeFile(path: string, score: number, changed: number): ScoredFile {
   };
 }
 
-function makePlan(deep: ScoredFile[], quick: ScoredFile[], staticOnly: ScoredFile[] = []): ReviewPlan {
+function makePlan(
+  deep: ScoredFile[],
+  quick: ScoredFile[],
+  staticOnly: ScoredFile[] = [],
+): ReviewPlan {
   return { deep, quick, staticOnly };
 }
 

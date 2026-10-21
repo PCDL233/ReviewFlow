@@ -42,6 +42,9 @@ export function renderPrComment(report: ReviewReport): string {
       lines.push('', `其余 ${issues.length - shown.length} 条见完整报告。`);
     }
   }
-  lines.push('', `<sub>ReviewFlow · token ${report.meta.tokenUsed} · ${report.meta.durationMs}ms</sub>`);
+  lines.push(
+    '',
+    `<sub>ReviewFlow · token ${report.meta.tokenUsed} · ${report.meta.durationMs}ms</sub>`,
+  );
   return lines.join('\n');
 }

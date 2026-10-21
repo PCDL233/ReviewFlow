@@ -3,12 +3,7 @@ import pMap from 'p-map';
 import { ReviewAgent, REVIEW_PROMPT_VERSION, validateFindings } from '@ai-review/agents';
 import { DiffContextBuilder } from '@ai-review/diff';
 import type { GitReader } from '@ai-review/diff';
-import type {
-  LlmUsage,
-  ReviewDimension,
-  ReviewProvider,
-  TokenBudget,
-} from '@ai-review/llm';
+import type { LlmUsage, ReviewDimension, ReviewProvider, TokenBudget } from '@ai-review/llm';
 import type { ToolRegistry } from '@ai-review/tools';
 import { worstLlmStatus } from '@ai-review/shared';
 import type {
@@ -419,10 +414,7 @@ export function applySizeLimits(
 }
 
 /** 风险规划分流 + 预算降级 + 规模上限（方案 3.2/3.3） */
-export function makePlanNode(
-  deps: PipelineDeps,
-  runMetrics?: RunMetricsAccumulator,
-): PipelineNode {
+export function makePlanNode(deps: PipelineDeps, runMetrics?: RunMetricsAccumulator): PipelineNode {
   const planner = new RiskPlanner(deps.history);
   return async (state) => {
     const planned = await planner.plan(state.context.files.map((file) => file.diff));
@@ -495,10 +487,7 @@ export function makeReviewNode(
       cacheHits += 1;
     }
 
-    const subContext = selectFiles(
-      state.context,
-      new Set(missed.map((file) => file.diff.path)),
-    );
+    const subContext = selectFiles(state.context, new Set(missed.map((file) => file.diff.path)));
     const evidence = state.findings.filter(
       (finding) => finding.agent === 'static' && paths.has(finding.filePath),
     );
@@ -605,10 +594,7 @@ function isHealCandidate(finding: ReviewState['findings'][number]): boolean {
  * 受 token 预算与并发上限约束：预算不足时跳过本轮（记入 metrics 并在报告中体现），
  * 避免自愈路径绕过预算成为成本黑洞。
  */
-export function makeHealNode(
-  deps: PipelineDeps,
-  runMetrics?: RunMetricsAccumulator,
-): PipelineNode {
+export function makeHealNode(deps: PipelineDeps, runMetrics?: RunMetricsAccumulator): PipelineNode {
   const dimensions = deps.dimensions ?? [...LLM_DIMENSIONS];
   return async (state, config) => {
     const prior = state.findings.filter(isHealCandidate);

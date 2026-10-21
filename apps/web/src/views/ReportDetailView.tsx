@@ -181,7 +181,8 @@ export function ReportDetailView(props: { reviewId: string; onBack: () => void }
     onSuccess: () => {
       void message.success('审查记录已删除');
       void queryClient.invalidateQueries({ queryKey: ['reviews'] });
-      props.onBack();    },
+      props.onBack();
+    },
     onError: (error) => notifyError(error, { title: '删除失败' }),
   });
   const [exporting, setExporting] = useState<'markdown' | 'print' | null>(null);
@@ -737,9 +738,7 @@ export function ReportDetailView(props: { reviewId: string; onBack: () => void }
         onClose={() => setCommentFinding(undefined)}
         width={480}
       >
-        {commentFinding === undefined ? null : (
-          <CommentThread findingId={commentFinding.id} />
-        )}
+        {commentFinding === undefined ? null : <CommentThread findingId={commentFinding.id} />}
       </Drawer>
     </div>
   );
@@ -980,7 +979,9 @@ function CommentThread(props: { findingId: number }): ReactElement {
             <Space orientation="vertical" size={4}>
               <Space>
                 <Typography.Text strong>{comment.username}</Typography.Text>
-                <Typography.Text type="secondary">{formatDateTime(comment.createdAt)}</Typography.Text>
+                <Typography.Text type="secondary">
+                  {formatDateTime(comment.createdAt)}
+                </Typography.Text>
               </Space>
               <Typography.Paragraph style={{ margin: 0, whiteSpace: 'pre-wrap' }}>
                 {comment.body}
@@ -1047,16 +1048,11 @@ function CompareFindingList(props: {
 }
 
 /** 选择同一仓库/分支的历史审查并与当前报告对比。 */
-function ComparePanel(props: {
-  reviewId: string;
-  repoPath: string;
-  branch: string;
-}): ReactElement {
+function ComparePanel(props: { reviewId: string; repoPath: string; branch: string }): ReactElement {
   const [baseId, setBaseId] = useState<string | undefined>(undefined);
   const candidatesQuery = useQuery({
     queryKey: ['compare-candidates', props.repoPath, props.branch],
-    queryFn: () =>
-      fetchReviewPage({ repo: props.repoPath, branch: props.branch, pageSize: 50 }),
+    queryFn: () => fetchReviewPage({ repo: props.repoPath, branch: props.branch, pageSize: 50 }),
   });
   const compareQuery = useQuery({
     queryKey: ['compare', props.reviewId, baseId],

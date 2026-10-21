@@ -3,7 +3,10 @@ import type { ReviewSource } from '@ai-review/shared';
 import { GitReader, resolveSource } from '../src/index.js';
 
 /** 记录 git 调用参数的假执行器 */
-function makeGit(outputs: Record<string, string>, calls: string[][] = []): {
+function makeGit(
+  outputs: Record<string, string>,
+  calls: string[][] = [],
+): {
   git: (...args: string[]) => Promise<string>;
   calls: string[][];
 } {
@@ -60,12 +63,13 @@ describe('resolveSource', () => {
 });
 
 describe('GitReader.readDiff', () => {
-  const cases: Array<{ source: ReviewSource; expected: string[] }> = [
+  const cases: Array<{ source: ReviewSource; expected: string[]; revList?: string }> = [
     { source: { target: 'staged' }, expected: ['diff', '--cached', '--unified=50'] },
     { source: { target: 'worktree' }, expected: ['diff', '--unified=50'] },
     {
       source: { target: 'commit', commit: 'abc1234' },
       expected: ['diff', 'abc1234^!', '--unified=50'],
+      revList: 'abc1234 parent\n',
     },
     {
       source: { target: 'range', base: 'origin/main' },
@@ -73,13 +77,27 @@ describe('GitReader.readDiff', () => {
     },
   ];
 
-  for (const { source, expected } of cases) {
+  for (const { source, expected, revList } of cases) {
     it(`passes the right arguments for ${source.target}`, async () => {
-      const { git, calls } = makeGit({ diff: '' });
+      const { git, calls } = makeGit({
+        diff: '',
+        ...(revList === undefined ? {} : { 'rev-list': revList }),
+      });
       await new GitReader(git).readDiff(source);
-      expect(calls[0]).toEqual(expected);
+      expect(calls[calls.length - 1]).toEqual(expected);
     });
   }
+
+  it('falls back to git show for a root commit without a parent', async () => {
+    const { git, calls } = makeGit({ 'rev-list': 'abc1234\n', show: 'root diff' });
+    await expect(
+      new GitReader(git).readDiff({ target: 'commit', commit: 'abc1234' }),
+    ).resolves.toBe('root diff');
+    expect(calls).toEqual([
+      ['rev-list', '--parents', '-n', '1', 'abc1234'],
+      ['show', '--format=', '--unified=50', 'abc1234'],
+    ]);
+  });
 });
 
 describe('GitReader.readFileAt', () => {
@@ -108,9 +126,9 @@ describe('GitReader.readFileAt', () => {
 
   it('returns an empty string for the worktree target when no repo path is injected', async () => {
     const git = async (): Promise<string> => '';
-    await expect(
-      new GitReader(git).readFileAt('src/a.ts', { target: 'worktree' }),
-    ).resolves.toBe('');
+    await expect(new GitReader(git).readFileAt('src/a.ts', { target: 'worktree' })).resolves.toBe(
+      '',
+    );
   });
 });
 

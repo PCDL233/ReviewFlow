@@ -2,9 +2,7 @@
   "id": "security-eval",
   "source": "ollama:qwen3.5:0.8b",
   "dimension": "security",
-  "expectedTitles": [
-    "Potential unsafe command or code execution"
-  ],
+  "expectedTitles": ["Potential unsafe command or code execution"],
   "findings": [
     {
       "agent": "security",

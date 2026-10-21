@@ -295,9 +295,8 @@ export function AdminHookPage(): ReactElement {
             }
           >
             <Typography.Paragraph type="secondary">
-              CI 使用同一个同步端点与令牌：响应中的{' '}
-              <Typography.Text code>exitCode</Typography.Text> 沿用 0 通过 / 1 阻断 / 2 配置环境错误
-              / 3 超时的契约。
+              CI 使用同一个同步端点与令牌：响应中的 <Typography.Text code>exitCode</Typography.Text>{' '}
+              沿用 0 通过 / 1 阻断 / 2 配置环境错误 / 3 超时的契约。
             </Typography.Paragraph>
             <CodeBlock code={CI_SNIPPET} title=".github/workflows/ai-review.yml" maxHeight={280} />
           </Card>

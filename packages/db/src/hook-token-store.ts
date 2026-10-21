@@ -46,11 +46,10 @@ export class HookTokenStore {
    * @param input 标签、签发人与有效期
    * @returns 令牌行（不含明文）与明文（仅此一次可见）
    */
-  public create(input: {
-    label: string;
-    createdBy?: string;
-    expiresInDays: number;
-  }): { token: HookToken; plainText: string } {
+  public create(input: { label: string; createdBy?: string; expiresInDays: number }): {
+    token: HookToken;
+    plainText: string;
+  } {
     const plainText = `air_${randomBytes(TOKEN_BYTES).toString('base64url')}`;
     const id = randomUUID();
     const now = new Date();

@@ -178,7 +178,11 @@ describe('POST /api/hooks/review', () => {
       },
       body: JSON.stringify({ repoPath: process.cwd(), target: 'staged' }),
     });
-    const body = (await res.json()) as { exitCode: number; blocking: boolean; blockerCount: number };
+    const body = (await res.json()) as {
+      exitCode: number;
+      blocking: boolean;
+      blockerCount: number;
+    };
     expect(body.exitCode).toBe(EXIT_CODES.blocked);
     expect(body.blocking).toBe(true);
     expect(body.blockerCount).toBe(1);

@@ -97,18 +97,13 @@ export class SqliteCheckpointSaver extends MemorySaver {
     return saved;
   }
 
-  override async putWrites(
-    config: PutConfig,
-    writes: PutWrites,
-    taskId: string,
-  ): Promise<void> {
+  override async putWrites(config: PutConfig, writes: PutWrites, taskId: string): Promise<void> {
     await super.putWrites(config, writes, taskId);
     const threadId = config.configurable?.thread_id;
     const checkpointId = config.configurable?.checkpoint_id;
     const namespace = config.configurable?.checkpoint_ns ?? '';
     if (typeof threadId !== 'string' || typeof checkpointId !== 'string') return;
-    const bucket =
-      this.writes[JSON.stringify([threadId, namespace, checkpointId])] ?? {};
+    const bucket = this.writes[JSON.stringify([threadId, namespace, checkpointId])] ?? {};
     const statement = this.sqlite.prepare(
       `INSERT OR REPLACE INTO langgraph_writes
        (thread_id, checkpoint_ns, checkpoint_id, write_key, task_id, channel, value)

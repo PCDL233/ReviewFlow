@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { buildPrintHtml } from '../src/lib/report-export';
 
-const SAMPLE = '<!doctype html><html><head><title>报告</title></head><body><main>x</main></body></html>';
+const SAMPLE =
+  '<!doctype html><html><head><title>报告</title></head><body><main>x</main></body></html>';
 
 describe('buildPrintHtml', () => {
   it('把打印样式注入到 </head> 之前', () => {

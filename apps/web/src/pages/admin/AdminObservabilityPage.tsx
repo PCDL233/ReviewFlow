@@ -137,7 +137,13 @@ export function AdminObservabilityPage(): ReactElement {
             onRetry={() => void callsQuery.refetch()}
           />
         ) : callsQuery.data === undefined ? (
-          <Table<CallRow> loading columns={columns} dataSource={[]} rowKey="id" pagination={false} />
+          <Table<CallRow>
+            loading
+            columns={columns}
+            dataSource={[]}
+            rowKey="id"
+            pagination={false}
+          />
         ) : callsQuery.data.length === 0 ? (
           <EmptyState
             title="还没有调用记录"
@@ -145,7 +151,9 @@ export function AdminObservabilityPage(): ReactElement {
           />
         ) : (
           <Table<CallRow>
-            rowKey={(record) => `${record.reviewId}-${record.createdAt}-${record.dimension}-${record.round}`}
+            rowKey={(record) =>
+              `${record.reviewId}-${record.createdAt}-${record.dimension}-${record.round}`
+            }
             columns={columns}
             dataSource={callsQuery.data}
             pagination={{ pageSize: 20, showSizeChanger: false }}

@@ -1,12 +1,7 @@
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { createGitRunner, GitReader } from '@ai-review/diff';
-import type {
-  RepoBranch,
-  RepoCommit,
-  RepoStatus,
-  Repository,
-} from '@ai-review/shared/api';
+import type { RepoBranch, RepoCommit, RepoStatus, Repository } from '@ai-review/shared/api';
 
 /** 目录扫描深度上限：够覆盖 `<root>/<group>/<repo>`，同时避免遍历整个磁盘 */
 const MAX_SCAN_DEPTH = 3;

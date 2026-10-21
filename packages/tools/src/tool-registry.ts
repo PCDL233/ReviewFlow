@@ -125,7 +125,8 @@ export function buildDefaultRegistry(options?: {
   if (customRules.some((rule) => rule.enabled)) {
     registry.register({
       name: 'custom_rule_check',
-      description: 'Apply user-defined custom review rules (regex) to changed lines, staged content and function snippets.',
+      description:
+        'Apply user-defined custom review rules (regex) to changed lines, staged content and function snippets.',
       run: (context) => runCustomRules(context.files, customRules),
     });
   }

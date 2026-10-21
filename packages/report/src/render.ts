@@ -40,9 +40,7 @@ export function renderMarkdown(report: ReviewReport): string {
     ...(report.meta.dimensions === undefined
       ? []
       : [`- 审查维度: ${report.meta.dimensions.join('、') || '未启用'}`]),
-    ...(report.meta.cacheHits === undefined
-      ? []
-      : [`- 缓存命中: ${report.meta.cacheHits} 个文件`]),
+    ...(report.meta.cacheHits === undefined ? [] : [`- 缓存命中: ${report.meta.cacheHits} 个文件`]),
     `- Token: ${report.meta.tokenUsed}`,
     '',
     '## 1. 变更概述',

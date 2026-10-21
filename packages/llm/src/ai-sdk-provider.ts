@@ -3,11 +3,7 @@ import type { LanguageModel, ToolSet } from 'ai';
 import { createAnthropic } from '@ai-sdk/anthropic';
 import { createOpenAI } from '@ai-sdk/openai';
 import { FindingsOutputSchema } from '@ai-review/shared';
-import type {
-  Finding,
-  FindingsOutput,
-  ReviewToolDescriptor,
-} from '@ai-review/shared';
+import type { Finding, FindingsOutput, ReviewToolDescriptor } from '@ai-review/shared';
 import { endpointFor } from './endpoint.js';
 import { parseFindings } from './parse.js';
 import {

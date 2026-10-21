@@ -127,8 +127,7 @@ function pythonMetrics(source: string, threshold: number): FunctionMetrics[] {
 
 const BRACE_DECLARATIONS: Record<'go' | 'java', RegExp> = {
   go: /^\s*func\s+(?:\([^)]*\)\s*)?([A-Za-z_]\w*)\s*\(/,
-  java:
-    /^\s*(?:(?:public|private|protected|static|final|synchronized|abstract|native|default)\s+)*[\w<>[\],.?]+\s+([A-Za-z_]\w*)\s*\([^;]*\)\s*(?:throws[^{]+)?\{/,
+  java: /^\s*(?:(?:public|private|protected|static|final|synchronized|abstract|native|default)\s+)*[\w<>[\],.?]+\s+([A-Za-z_]\w*)\s*\([^;]*\)\s*(?:throws[^{]+)?\{/,
 };
 
 function braceMetrics(

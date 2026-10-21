@@ -174,9 +174,17 @@ describe('complexityFindings', () => {
       source.split('\n').map((content, index) => ({ content, line: index + 1 }));
     const findings = complexityFindings(
       [
-        makeFileContext({ path: 'src/risky.py', stagedContent: python, addedLines: allLines(python) }),
+        makeFileContext({
+          path: 'src/risky.py',
+          stagedContent: python,
+          addedLines: allLines(python),
+        }),
         makeFileContext({ path: 'src/risky.go', stagedContent: go, addedLines: allLines(go) }),
-        makeFileContext({ path: 'src/Risky.java', stagedContent: java, addedLines: allLines(java) }),
+        makeFileContext({
+          path: 'src/Risky.java',
+          stagedContent: java,
+          addedLines: allLines(java),
+        }),
       ],
       15,
     );

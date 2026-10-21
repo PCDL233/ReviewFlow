@@ -36,7 +36,11 @@ function delay(ms: number): Promise<void> {
  * 把底层异常归一化为带分类的 LlmError。
  * 取消与超时必须区分：取消要继续向上传播（停止流水线），超时按可重试错误处理。
  */
-function toLlmError(error: unknown, external: AbortSignal | undefined, timedOut: boolean): LlmError {
+function toLlmError(
+  error: unknown,
+  external: AbortSignal | undefined,
+  timedOut: boolean,
+): LlmError {
   if (error instanceof LlmError) return error;
   if (external?.aborted === true) {
     return new LlmError('request aborted by caller', 'cancelled', { cause: error });

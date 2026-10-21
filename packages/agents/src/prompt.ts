@@ -74,7 +74,12 @@ type FilePayload = {
   deletions: number;
   summary: string;
   signature: unknown;
-  changedLines: Array<{ type: string; oldLineNo: number | null; newLineNo: number | null; content: string }>;
+  changedLines: Array<{
+    type: string;
+    oldLineNo: number | null;
+    newLineNo: number | null;
+    content: string;
+  }>;
   changedLinesTruncated: boolean;
   snippet?: string;
   ragHits?: Array<{ path: string; kind: string; text: string }>;

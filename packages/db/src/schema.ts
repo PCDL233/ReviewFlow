@@ -125,7 +125,7 @@ export const findings = sqliteTable(
   ],
 );
 
-/** 发现评论表：人工协作记录，不参与流水线判定 */export const findingComments = sqliteTable(
+/** 发现评论表：人工协作记录，不参与流水线判定 */ export const findingComments = sqliteTable(
   'finding_comments',
   {
     id: integer('id').primaryKey({ autoIncrement: true }),

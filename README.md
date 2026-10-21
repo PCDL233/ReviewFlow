@@ -574,7 +574,11 @@ pnpm lint        # ESLint flat config
 pnpm typecheck   # Turbo typecheck
 pnpm test        # Turbo test
 pnpm format      # Prettier --write（会修改文件）
+pnpm clean       # 清理构建产物与缓存（保留数据库、日志和报告）
+pnpm clean:dry   # 仅预览将删除的构建产物
 ```
+
+`pnpm clean` 只删除 `.gitignore` 覆盖的 `dist/`、`.turbo/`、`tsbuildinfo` 和失效的 `@ai-review/cli` 链接，不会触碰 `.ai-review-cache`、`.ai-review-reports`、`logs` 与本地工具配置。清理后需重新执行 `pnpm build` 才能直接运行 `apps/server/dist/main.js`。
 
 代码约定（详见[代码编写规范](docs/代码编写规范.md)）：
 

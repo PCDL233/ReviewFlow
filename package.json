@@ -11,7 +11,9 @@
     "test": "turbo test",
     "typecheck": "turbo typecheck",
     "lint": "eslint .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "clean": "node scripts/clean-build.mjs",
+    "clean:dry": "node scripts/clean-build.mjs --dry-run"
   },
   "devDependencies": {
     "@ai-review/eslint-config": "workspace:*",

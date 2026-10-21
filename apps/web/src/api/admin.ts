@@ -8,6 +8,7 @@ import {
   CustomRuleTestRequestSchema,
   CustomRuleTestResultSchema,
   LoginLogListResponseSchema,
+  LlmCallListResponseSchema,
   OperationLogListResponseSchema,
   ResetPasswordResponseSchema,
   RoleInputSchema,
@@ -24,6 +25,7 @@ import type {
   CustomRuleTestResult,
   LoginLogListResponse,
   LoginLogQuery,
+  LlmCallListResponse,
   OperationLogListResponse,
   OperationLogQuery,
   Role,
@@ -199,4 +201,13 @@ export async function fetchOperationLogs(
     await fetch(`${API_BASE}/operation-logs?${toQueryString(query)}`),
   );
   return body;
+}
+
+/** 最近的模型调用审计（管理台可观测页） */
+export async function fetchLlmCalls(limit = 200): Promise<LlmCallListResponse['calls']> {
+  const body = await parseResponse(
+    LlmCallListResponseSchema,
+    await fetch(`${API_BASE}/llm-calls?limit=${limit}`),
+  );
+  return body.calls;
 }

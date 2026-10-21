@@ -6,6 +6,9 @@ settings:
 
 catalogs:
   default:
+    '@ai-sdk/anthropic':
+      specifier: ^2.0.102
+      version: 2.0.110
     '@ai-sdk/openai':
       specifier: ^2.0.127
       version: 2.0.127
@@ -24,6 +27,9 @@ catalogs:
     '@langchain/langgraph':
       specifier: ^1.4.14
       version: 1.4.14
+    '@langchain/langgraph-checkpoint':
+      specifier: ^1.1.5
+      version: 1.1.5
     '@modelcontextprotocol/sdk':
       specifier: ^1.30.0
       version: 1.30.0
@@ -348,6 +354,9 @@ importers:
       '@ai-review/shared':
         specifier: workspace:*
         version: link:../shared
+      '@langchain/langgraph-checkpoint':
+        specifier: 'catalog:'
+        version: 1.1.5(@langchain/core@1.2.10(@opentelemetry/api@1.9.1))
       better-sqlite3:
         specifier: 'catalog:'
         version: 13.0.3
@@ -422,6 +431,15 @@ importers:
       '@ai-review/shared':
         specifier: workspace:*
         version: link:../shared
+      '@ai-sdk/anthropic':
+        specifier: 'catalog:'
+        version: 2.0.110(zod@4.6.2)
+      '@ai-sdk/openai':
+        specifier: 'catalog:'
+        version: 2.0.127(zod@4.6.2)
+      ai:
+        specifier: 'catalog:'
+        version: 5.0.257(zod@4.6.2)
     devDependencies:
       '@ai-review/tsconfig':
         specifier: workspace:*
@@ -435,6 +453,9 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 5.0.0(@opentelemetry/api@1.9.1)(@types/node@22.20.2)(vite@8.3.0(@types/node@22.20.2)(esbuild@0.28.2)(tsx@4.23.13)(yaml@2.9.0))
+      zod:
+        specifier: 'catalog:'
+        version: 4.6.2
 
   packages/rag:
     dependencies:
@@ -531,6 +552,18 @@ importers:
       picomatch:
         specifier: 'catalog:'
         version: 4.0.7
+      tree-sitter:
+        specifier: 'catalog:'
+        version: 0.25.1
+      tree-sitter-go:
+        specifier: 'catalog:'
+        version: 0.25.0(tree-sitter@0.25.1)
+      tree-sitter-java:
+        specifier: 'catalog:'
+        version: 0.23.5(tree-sitter@0.25.1)
+      tree-sitter-python:
+        specifier: 'catalog:'
+        version: 0.25.0(tree-sitter@0.25.1)
       ts-morph:
         specifier: 'catalog:'
         version: 28.0.0
@@ -567,6 +600,12 @@ importers:
 
 packages:
 
+  '@ai-sdk/anthropic@2.0.110':
+    resolution: {integrity: sha512-nikWE1VTt3rGWhK3oUw2zAluuMg7BHC9uGlvTWZJvDbcPO3aIepM5J0gv4jaWWRcuMVonKeS+MBBuMjNB5Gerw==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
   '@ai-sdk/gateway@2.0.151':
     resolution: {integrity: sha512-FVTfQkpMNrVLsEVkeLwft+f9dJQhi6R0qNkfvKi81nupqDqW6NFXKNnpjslNrM4+VCrxeibBk+6RM5VYYJfecA==}
     engines: {node: '>=18'}
@@ -585,8 +624,18 @@ packages:
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
+  '@ai-sdk/provider-utils@3.0.42':
+    resolution: {integrity: sha512-5DMgJ2HD4rR6mvoc7mqeW5roLHTTqDKNkGuLOWnF0+UCOu96xqPFMy3RbGKYAYDh5YhkwGBdbV7f6xSkLxzGXw==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
   '@ai-sdk/provider@2.0.4':
     resolution: {integrity: sha512-B0M50w0W43jTzZGyZrNwwaK1M79aKPw6PD/dQhkBR7vkR68yCINWBo2CbBLJrbrqYc46TaiSfsTiT+S9EmVl0w==}
+    engines: {node: '>=18'}
+
+  '@ai-sdk/provider@2.0.5':
+    resolution: {integrity: sha512-cmG40u10QFEUrYXWYom6Lo6DLR+pND3wWABTTT9Nf7zg9F7BD46KNj+STekndp9Kg5ZAIPA0WxmTI0IwRvKvvQ==}
     engines: {node: '>=18'}
 
   '@ant-design/colors@8.0.1':
@@ -3164,6 +3213,12 @@ packages:
 
 snapshots:
 
+  '@ai-sdk/anthropic@2.0.110(zod@4.6.2)':
+    dependencies:
+      '@ai-sdk/provider': 2.0.5
+      '@ai-sdk/provider-utils': 3.0.42(zod@4.6.2)
+      zod: 4.6.2
+
   '@ai-sdk/gateway@2.0.151(zod@4.6.2)':
     dependencies:
       '@ai-sdk/provider': 2.0.4
@@ -3185,7 +3240,19 @@ snapshots:
       undici: 5.29.0
       zod: 4.6.2
 
+  '@ai-sdk/provider-utils@3.0.42(zod@4.6.2)':
+    dependencies:
+      '@ai-sdk/provider': 2.0.5
+      '@standard-schema/spec': 1.1.0
+      eventsource-parser: 3.1.1
+      undici: 5.29.0
+      zod: 4.6.2
+
   '@ai-sdk/provider@2.0.4':
+    dependencies:
+      json-schema: 0.4.0
+
+  '@ai-sdk/provider@2.0.5':
     dependencies:
       json-schema: 0.4.0
 

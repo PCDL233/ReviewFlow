@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import type { ReactElement } from 'react';
-import { Button, Space, Switch, Tag, Tooltip, Typography } from 'antd';
+import { Button, Popover, Space, Switch, Tag, Typography } from 'antd';
 import { DownOutlined, RightOutlined } from '@ant-design/icons';
 import type { IdentifiedFinding } from '@ai-review/shared/api';
 import { diffStats, isLineInRanges, parseUnifiedDiff } from '../lib/diff';
@@ -10,6 +10,8 @@ import { EmptyState } from './EmptyState';
 export type DiffViewerProps = {
   diffText: string | null;
   findings: IdentifiedFinding[];
+  /** 点击行尾问题标记时定位到发现卡片 */
+  onSelectFinding?: (finding: IdentifiedFinding) => void;
 };
 
 function rangesByFile(findings: readonly IdentifiedFinding[]): Map<string, LineRange[]> {
@@ -166,16 +168,61 @@ export function DiffViewer(props: DiffViewerProps): ReactElement {
                               <td className="diff-gutter diff-gutter-new">
                                 {line.newLine ?? ''}
                                 {marker ? (
-                                  <Tooltip
-                                    title={related
-                                      .map((finding) => `${finding.severity}：${finding.title}`)
-                                      .join('；')}
+                                  <Popover
+                                    trigger="click"
+                                    placement="right"
+                                    content={
+                                      <div className="diff-finding-popover">
+                                        {related.map((finding) => (
+                                          <div key={finding.id} className="diff-finding-item">
+                                            <Space size={6}>
+                                              <Tag
+                                                color={
+                                                  finding.severity === 'BLOCKER'
+                                                    ? 'error'
+                                                    : finding.severity === 'WARNING'
+                                                      ? 'warning'
+                                                      : 'default'
+                                                }
+                                              >
+                                                {finding.severity}
+                                              </Tag>
+                                              <Typography.Text strong>
+                                                {finding.title}
+                                              </Typography.Text>
+                                            </Space>
+                                            <Typography.Paragraph
+                                              type="secondary"
+                                              ellipsis={{ rows: 3 }}
+                                              style={{ margin: '6px 0 0' }}
+                                            >
+                                              {finding.description}
+                                            </Typography.Paragraph>
+                                            {props.onSelectFinding === undefined ? null : (
+                                              <Button
+                                                size="small"
+                                                type="link"
+                                                style={{ paddingInline: 0 }}
+                                                onClick={() => props.onSelectFinding?.(finding)}
+                                              >
+                                                在发现列表中查看
+                                              </Button>
+                                            )}
+                                          </div>
+                                        ))}
+                                      </div>
+                                    }
                                   >
-                                    <span
-                                      className={`diff-flag-dot severity-${related[0]?.severity.toLowerCase() ?? 'warning'}`}
-                                      aria-label="此处存在问题"
-                                    />
-                                  </Tooltip>
+                                    <button
+                                      type="button"
+                                      className="diff-flag"
+                                      aria-label="打开问题卡片"
+                                    >
+                                      <span
+                                        className={`diff-flag-dot severity-${related[0]?.severity.toLowerCase() ?? 'warning'}`}
+                                      />
+                                    </button>
+                                  </Popover>
                                 ) : null}
                               </td>
                               <td className="diff-code">{line.text === '' ? ' ' : line.text}</td>

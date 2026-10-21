@@ -25,12 +25,23 @@ export type CustomRuleHit = {
   text: string;
 };
 
+/** 单文件规则扫描字符上限：防止超长生成物/压缩文件把同步正则变成事实上的 DoS */
+const MAX_CUSTOM_RULE_SCAN_CHARS = 1_000_000;
+
 /**
- * 编译规则正则；非法表达式返回 null（该规则被跳过，确定性工具不阻断流水线）。
+ * 明显的灾难性回溯形态：分组内含重复量词、分组外再次重复，例如 `(a+)+`、`(.*)*`。
+ * 这是启发式预检（不是完整的正则安全性证明），宁可拒绝一条规则也不阻塞审查进程。
+ */
+const UNSAFE_NESTED_QUANTIFIER = /\([^()]*[+*][^()]*\)\s*[+*{]/;
+
+/**
+ * 编译规则正则；非法表达式或明显的 ReDoS 形态返回 null
+ * （该规则被跳过，确定性工具不阻断流水线）。
  * @param rule 自定义规则
  * @returns 编译后的正则，失败为 null
  */
 export function compileCustomRulePattern(rule: CustomRule): RegExp | null {
+  if (rule.pattern.length > 1024 || UNSAFE_NESTED_QUANTIFIER.test(rule.pattern)) return null;
   try {
     return new RegExp(rule.pattern, rule.flags);
   } catch {
@@ -61,8 +72,11 @@ function matchFileScope(rule: CustomRule, file: FileContext, pattern: RegExp): C
         if (pattern.test(line.content)) hits.push({ scope, line: line.newLineNo, text: line.content });
       }
     } else if (scope === 'staged') {
-      // 暂存文件全文（index blob）：逐行匹配，行号为文件内行号
-      for (const { line, text } of matchLines(pattern, file.stagedContent)) {
+      // 暂存文件全文（index blob）：逐行匹配，行号为文件内行号；超长文件截断以限制单次正则成本
+      for (const { line, text } of matchLines(
+        pattern,
+        file.stagedContent.slice(0, MAX_CUSTOM_RULE_SCAN_CHARS),
+      )) {
         hits.push({ scope, line, text });
       }
     } else {

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -12,6 +13,7 @@ import { AiReviewConfigSchema, loadConfig } from '@ai-review/shared';
 import type { AiReviewConfig, ReviewSource } from '@ai-review/shared';
 import { buildDefaultRegistry, resolveEnabledTools } from '@ai-review/tools';
 import { resolveReviewDimensions } from '@ai-review/core';
+import { SqliteCheckpointSaver } from '@ai-review/db';
 import { AuditService } from './audit.js';
 import { AvatarStore } from './avatar.js';
 import { buildApp } from './app.js';
@@ -19,6 +21,8 @@ import { createStoreReviewCache } from './cache.js';
 import { Logger } from './logger.js';
 import { createReviewMetrics } from './metrics.js';
 import { ReviewService } from './review-service.js';
+import type { ReviewOverrides } from './review-service.js';
+import { createReviewTools } from './review-tools.js';
 import { loadServerSettings } from './server-settings.js';
 import { createKnowledgeManager } from './knowledge.js';
 
@@ -50,6 +54,53 @@ function parseArgs(argv: readonly string[]): ServerCliOptions {
 }
 
 /**
+ * 读取仓库内的项目约定文件（AGENTS.md / CLAUDE.md / .ai-review/conventions.md）。
+ * 约定作为 LLM 的“背景证据”，限长避免把整份文档塞进每次审查。
+ * @param repoPath 仓库根目录
+ * @returns 约定摘要；没有约定文件时返回 undefined
+ */
+function readConventions(repoPath: string): string | undefined {
+  const candidates = ['AGENTS.md', 'CLAUDE.md', '.ai-review/conventions.md'];
+  const parts: string[] = [];
+  for (const name of candidates) {
+    const path = join(repoPath, name);
+    if (!existsSync(path)) continue;
+    try {
+      const text = readFileSync(path, 'utf8');
+      parts.push(`### ${name}\n${text.slice(0, 4_000)}`);
+    } catch {
+      // 约定文件读取失败不影响审查（降级为无约定）
+    }
+    if (parts.join('\n\n').length > 6_000) break;
+  }
+  return parts.length === 0 ? undefined : parts.join('\n\n').slice(0, 6_000);
+}
+
+/**
+ * 规则指纹：自定义规则、静态阈值、维度与模型共同决定结果，
+ * 任一变化都必须让审查缓存失效（历史缺陷：只按 prompt 版本失效）。
+ * @param config 当前配置
+ * @returns 32 位十六进制指纹
+ */
+function fingerprintRules(config: AiReviewConfig, overrides: ReviewOverrides = {}): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify({
+        provider: config.llm.provider,
+        model: config.llm.model,
+        temperature: config.llm.temperature,
+        dimensions: config.review.dimensions,
+        customRules: config.customRules,
+        staticAnalysis: config.staticAnalysis,
+        // 单次覆盖也会改变结论，必须参与缓存键
+        overrides,
+      }),
+    )
+    .digest('hex')
+    .slice(0, 32);
+}
+
+/**
  * 组装服务端审查流水线；Provider 无法使用时仍保留确定性的 mock fallback。
  * @param source 审查来源（staged/worktree/commit/range），由发起方指定
  */
@@ -59,14 +110,31 @@ function createPipelineDeps(
   config: AiReviewConfig,
   knowledge: ReturnType<typeof createKnowledgeManager>,
   source: ReviewSource,
+  overrides: ReviewOverrides = {},
+  checkpointer?: SqliteCheckpointSaver,
 ): PipelineDeps {
   const git = createGitRunner(repoPath);
+  const gitReader = new GitReader(git, repoPath);
+  const conventions = readConventions(repoPath);
   return {
-    gitReader: new GitReader(git, repoPath),
+    gitReader,
     rag: knowledge.retriever,
+    repoPath,
     ignores: createIgnoreRules(config.review.ignorePatterns),
     history: createFileHistory(git),
     providers: createConfiguredProviders(config),
+    ...(conventions === undefined ? {} : { conventions }),
+    ...((overrides.toolCalling ?? config.review.toolCalling)
+      ? {
+          tools: createReviewTools({
+            gitReader,
+            source,
+            charBudget: config.review.toolCharBudget,
+          }),
+        }
+      : {}),
+    rulesFingerprint: fingerprintRules(config, overrides),
+    ...(checkpointer === undefined ? {} : { checkpointer }),
     registry: buildDefaultRegistry({
       complexityThreshold: config.staticAnalysis.complexityThreshold,
       customRules: config.customRules,
@@ -78,9 +146,9 @@ function createPipelineDeps(
       config.llm.provider === 'mock' ? 'mock + 静态分析' : `${config.llm.model} + 静态分析`,
     mode,
     source,
-    dimensions: resolveReviewDimensions(config.review.dimensions),
-    maxFiles: config.review.maxFiles,
-    maxChangedLines: config.review.maxChangedLines,
+    dimensions: resolveReviewDimensions(overrides.dimensions ?? config.review.dimensions),
+    maxFiles: overrides.maxFiles ?? config.review.maxFiles,
+    maxChangedLines: overrides.maxChangedLines ?? config.review.maxChangedLines,
   };
 }
 
@@ -120,6 +188,22 @@ export async function startServer(options: ServerCliOptions): Promise<void> {
   const knowledge = createKnowledgeManager(config);
   const sqlite = openSqlite(options.dbFile);
   const store = new ReviewStore(sqlite);
+  // LangGraph 检查点持久化：进程重启后可按 reviewId（thread_id）续跑
+  const checkpointer = new SqliteCheckpointSaver(sqlite);
+  // 崩溃恢复：清理无主检查点（节点先于 reviews 行写入，不能依赖外键级联）
+  try {
+    const pruned = store.pruneOrphanReviewStages();
+    if (pruned > 0) console.warn(`[ai-review] pruned ${pruned} orphan review stage(s)`);
+  } catch (error) {
+    console.error('[ai-review] failed to prune orphan review stages:', error);
+  }
+  try {
+    const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1_000).toISOString();
+    const pruned = store.pruneLanggraphCheckpoints(cutoff);
+    if (pruned > 0) console.warn(`[ai-review] pruned ${pruned} expired checkpoint(s)`);
+  } catch (error) {
+    console.error('[ai-review] failed to prune expired checkpoints:', error);
+  }
   const users = new UserStore(sqlite);
   const hookTokens = new HookTokenStore(sqlite);
   // 审计日志：SQLite 落库（页面查询）+ Logger（控制台 + 按日文件归档），配置项总开关
@@ -144,10 +228,18 @@ export async function startServer(options: ServerCliOptions): Promise<void> {
   const readLiveConfig = createLiveConfigReader(configPath, config);
   const service = new ReviewService(
     store,
-    (repoPath, mode, source) => {
+    (repoPath, mode, source, overrides) => {
       const liveConfig = readLiveConfig();
       return {
-        ...createPipelineDeps(repoPath, mode, liveConfig, knowledge, source),
+        ...createPipelineDeps(
+          repoPath,
+          mode,
+          liveConfig,
+          knowledge,
+          source,
+          overrides,
+          checkpointer,
+        ),
         reviewCache,
       };
     },
@@ -155,6 +247,9 @@ export async function startServer(options: ServerCliOptions): Promise<void> {
     metrics,
     settings.maxConcurrent,
   );
+  // 恢复上次进程退出时仍在 running 的任务（checkpointer 会从最后成功节点继续）
+  const resumed = service.resumeInterrupted();
+  if (resumed > 0) console.warn(`[ai-review] resumed ${resumed} interrupted review job(s)`);
   // 头像目录与 DB 同目录（默认 .ai-review-cache/avatars），由 AvatarStore 自行 mkdir
   const avatarStore = new AvatarStore(join(dirname(options.dbFile), 'avatars'));
   const app = buildApp({

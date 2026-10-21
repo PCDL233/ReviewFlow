@@ -16,9 +16,16 @@ export type StaticTool = {
   run(context: CodeContext): Finding[];
 };
 
+/** 单次工具执行失败（隔离后不阻断流水线，但必须可观测） */
+export type ToolFailure = {
+  tool: string;
+  message: string;
+};
+
 /** 工具注册表：Agent 与流水线经注册表调用工具，禁止绕过总线直接 import 实现（规范 §6.5） */
 export class ToolRegistry {
   private readonly tools = new Map<string, StaticTool>();
+  private readonly failures: ToolFailure[] = [];
 
   /** @param tool 注册的工具；同名注册覆盖（幂等装配） */
   public register(tool: StaticTool): void {
@@ -30,15 +37,34 @@ export class ToolRegistry {
     return [...this.tools.keys()].sort();
   }
 
+  /** @returns 本次运行中失败的工具（供报告/可观测页展示） */
+  public getFailures(): readonly ToolFailure[] {
+    return [...this.failures];
+  }
+
   /**
    * 依配置顺序运行启用的工具并汇总发现。
+   * 单个工具抛错只记录失败并跳过，不能拖垮整个审查（历史缺陷：一个工具异常导致 static 节点失败）。
+   * 注：工具为同步 CPU 操作，Node 无法在同线程内中断；超时保护需后续改为 Worker 执行。
    * @param context 审查上下文
    * @param enabledTools 启用的工具名；省略时运行全部
    * @returns 全部静态分析发现
    */
   public runAll(context: CodeContext, enabledTools?: readonly string[]): Finding[] {
     const enabled = enabledTools === undefined ? this.tools.keys() : enabledTools;
-    return [...enabled].flatMap((name) => this.tools.get(name)?.run(context) ?? []);
+    return [...enabled].flatMap((name) => {
+      const tool = this.tools.get(name);
+      if (tool === undefined) return [];
+      try {
+        return tool.run(context);
+      } catch (error) {
+        this.failures.push({
+          tool: name,
+          message: error instanceof Error ? error.message : String(error),
+        });
+        return [];
+      }
+    });
   }
 }
 

@@ -21,6 +21,10 @@
     "@ai-review/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "catalog:",
     "picomatch": "catalog:",
+    "tree-sitter": "catalog:",
+    "tree-sitter-go": "catalog:",
+    "tree-sitter-java": "catalog:",
+    "tree-sitter-python": "catalog:",
     "ts-morph": "catalog:",
     "zod": "catalog:"
   },

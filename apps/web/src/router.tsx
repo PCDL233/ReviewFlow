@@ -64,6 +64,11 @@ const AdminHookPage = lazy(() =>
 const AdminMetricsPage = lazy(() =>
   import('./pages/admin/AdminMetricsPage').then((m) => ({ default: m.AdminMetricsPage })),
 );
+const AdminObservabilityPage = lazy(() =>
+  import('./pages/admin/AdminObservabilityPage').then((m) => ({
+    default: m.AdminObservabilityPage,
+  })),
+);
 const AdminKnowledgePage = lazy(() =>
   import('./pages/admin/AdminKnowledgePage').then((m) => ({ default: m.AdminKnowledgePage })),
 );
@@ -317,6 +322,12 @@ const adminMetricsRoute = createRoute({
   component: AdminMetricsPage,
 });
 
+const adminObservabilityRoute = createRoute({
+  getParentRoute: () => adminRoute,
+  path: '/observability',
+  component: AdminObservabilityPage,
+});
+
 const adminKnowledgeRoute = createRoute({
   getParentRoute: () => adminRoute,
   path: '/knowledge',
@@ -356,6 +367,7 @@ export const routeTree = rootRoute.addChildren([
     adminInitRoute,
     adminHookRoute,
     adminMetricsRoute,
+    adminObservabilityRoute,
     adminKnowledgeRoute,
   ]),
 ]);

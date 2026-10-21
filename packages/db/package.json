@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@ai-review/shared": "workspace:*",
+    "@langchain/langgraph-checkpoint": "catalog:",
     "better-sqlite3": "catalog:",
     "drizzle-orm": "catalog:",
     "zod": "catalog:"

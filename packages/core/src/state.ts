@@ -31,6 +31,11 @@ export function emptyMetrics(): ReviewMetrics {
     cacheHits: 0,
     truncatedFiles: [],
     dimensions: [],
+    promptTokens: 0,
+    completionTokens: 0,
+    filesReviewed: 0,
+    rejectedFindings: 0,
+    contextFindings: 0,
   };
 }
 
@@ -58,6 +63,8 @@ const metricsChannel = Annotation<ReviewMetrics>({
       patch.dimensions === undefined || patch.dimensions.length === 0
         ? current.dimensions
         : patch.dimensions,
+    // report 节点用累加器快照整体替换 metrics；此处仍做并集，兼容节点直跑/未来增量写入
+    llmCalls: [...(current.llmCalls ?? []), ...(patch.llmCalls ?? [])],
   }),
   default: emptyMetrics,
 });

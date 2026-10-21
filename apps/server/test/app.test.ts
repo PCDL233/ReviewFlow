@@ -9,7 +9,7 @@ import { openSqlite, LogStore, ReviewStore, UserStore } from '@ai-review/db';
 import { GitReader } from '@ai-review/diff';
 import { createMockProvider } from '@ai-review/llm';
 import { buildDefaultRegistry } from '@ai-review/tools';
-import type { Finding } from '@ai-review/shared';
+import type { Finding, LlmCallRecord } from '@ai-review/shared';
 import { buildApp } from '../src/app.js';
 import { AuditService } from '../src/audit.js';
 import { AvatarStore } from '../src/avatar.js';
@@ -563,6 +563,25 @@ describe('admin user creation & RBAC roles', () => {
 });
 
 describe('review REST API', () => {
+  it('accepts per-run advanced overrides', async () => {
+    const app = makeHarness(async () => makeState());
+    const { cookie } = await registerUser(app, 'overrides');
+    const started = await app.request('/api/reviews', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...auth(cookie) },
+      body: JSON.stringify({
+        repoPath: 'D:/tmp/repo',
+        target: 'staged',
+        dimensions: ['security'],
+        maxFiles: 10,
+        maxChangedLines: 1_000,
+        toolCalling: false,
+        includePraise: false,
+      }),
+    });
+    expect(started.status).toBe(202);
+  });
+
   it('runs a review to completion and serves its report', async () => {
     const app = makeHarness(async () => makeState());
     const { cookie } = await registerUser(app, 'boss');
@@ -584,7 +603,208 @@ describe('review REST API', () => {
       severity: 'BLOCKER',
       title: 'Possible AWS access key id in changed code',
     });
-    expect(report.assessment).toContain('should not be committed');
+    expect(report.assessment).toContain('BLOCKER');
+    // 评分语义拆分：发现加权（reviewScore）与文件风险（changeRiskScore）各自独立
+    expect(report.meta).toMatchObject({ reviewScore: 70, riskScore: 70, changeRiskScore: 0 });
+
+    const prComment = await app.request(`/api/reviews/${reviewId}/pr-comment`, {
+      headers: auth(cookie),
+    });
+    expect(prComment.status).toBe(200);
+    const markdown = await prComment.text();
+    expect(markdown).toContain('AI Code Review');
+    expect(markdown).toContain('BLOCKER');
+
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ html_url: 'https://github.com/acme/repo/pull/7#c1' }), {
+          status: 201,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    vi.stubEnv('GITHUB_TOKEN', 'test-token');
+    try {
+      const posted = await app.request(`/api/reviews/${reviewId}/pr-comment`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...auth(cookie) },
+        body: JSON.stringify({ repo: 'acme/repo', pullNumber: 7 }),
+      });
+      expect(posted.status).toBe(200);
+      const postedBody = (await posted.json()) as { url: string };
+      expect(postedBody.url).toContain('github.com/acme/repo');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('aggregates rule hit statistics', async () => {
+    const state = makeState();
+    state.findings = [{ ...BLOCKER_FINDING, ruleId: 'no-console' }];
+    const app = makeHarness(async () => state);
+    const { cookie } = await registerUser(app, 'rule-stats');
+    await startReview(app, cookie);
+    await vi.waitFor(async () => {
+      const response = await app.request('/api/stats/rules', { headers: auth(cookie) });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { rules: Array<{ ruleId: string; count: number }> };
+      expect(body.rules[0]).toMatchObject({ ruleId: 'no-console', count: 1 });
+    });
+  });
+
+  it('serves the review trace with llm call audit rows', async () => {
+    const state = makeState();
+    const call: LlmCallRecord = {
+      dimension: 'security',
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+      status: 'degraded',
+      round: 0,
+      promptTokens: 100,
+      completionTokens: 20,
+      totalTokens: 120,
+      estimated: false,
+      latencyMs: 42,
+      promptChars: 400,
+      fallbackUsed: true,
+      attempts: [
+        {
+          kind: 'primary',
+          provider: 'deepseek',
+          model: 'deepseek-chat',
+          status: 'failed',
+          latencyMs: 10,
+          errorKind: 'timeout',
+          message: 'request timed out',
+        },
+        {
+          kind: 'fallback',
+          provider: 'ollama',
+          model: 'qwen3-coder:30b',
+          status: 'succeeded',
+          latencyMs: 32,
+        },
+      ],
+    };
+    state.metrics = { ...state.metrics, totalTokens: 120, llmStatus: 'degraded', llmCalls: [call] };
+    const app = makeHarness(async (_deps, runnerConfig) => {
+      runnerConfig.onNodeUpdate?.('parse', {});
+      runnerConfig.onNodeUpdate?.('report', {});
+      return state;
+    });
+    const { cookie } = await registerUser(app, 'traceboss');
+    const reviewId = await startReview(app, cookie);
+
+    await vi.waitFor(async () => {
+      const response = await app.request(`/api/reviews/${reviewId}/trace`, {
+        headers: auth(cookie),
+      });
+      expect(response.status).toBe(200);
+    });
+
+    const response = await app.request(`/api/reviews/${reviewId}/trace`, {
+      headers: auth(cookie),
+    });
+    const body = (await response.json()) as {
+      trace: {
+        llmCalls: Array<{ dimension: string; provider: string; totalTokens: number }>;
+        stages: Array<{ node: string; status: string }>;
+        summary: { tokenUsed: number; llmStatus: string; healRounds: number };
+      };
+    };
+    expect(body.trace.llmCalls).toHaveLength(1);
+    expect(body.trace.stages.map((stage) => stage.node)).toEqual(['parse', 'report']);
+    expect(body.trace.llmCalls[0]).toMatchObject({
+      dimension: 'security',
+      provider: 'deepseek',
+      totalTokens: 120,
+    });
+    expect(body.trace.summary).toMatchObject({
+      tokenUsed: 120,
+      llmStatus: 'degraded',
+      healRounds: 0,
+    });
+
+    const admin = await app.request('/api/admin/llm-calls', { headers: auth(cookie) });
+    expect(admin.status).toBe(200);
+    const adminBody = (await admin.json()) as { calls: unknown[] };
+    expect(adminBody.calls).toHaveLength(1);
+  });
+
+  it('supports finding lifecycle, comments, decision and compare', async () => {
+    const app = makeHarness(async () => makeState());
+    const { cookie } = await registerUser(app, 'lifecycle');
+    const reviewId = await startReview(app, cookie);
+
+    await vi.waitFor(async () => {
+      const response = await app.request(`/api/reviews/${reviewId}`, { headers: auth(cookie) });
+      expect(response.status).toBe(200);
+    });
+    const detail = (await (
+      await app.request(`/api/reviews/${reviewId}`, { headers: auth(cookie) })
+    ).json()) as { findings: Array<{ id: number; status?: string }>; meta: Record<string, unknown> };
+    const findingId = detail.findings[0]?.id;
+    if (findingId === undefined) throw new Error('expected a finding');
+
+    const patch = await app.request(`/api/findings/${findingId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', ...auth(cookie) },
+      body: JSON.stringify({ status: 'fixed' }),
+    });
+    expect(patch.status).toBe(200);
+
+    const comment = await app.request(`/api/findings/${findingId}/comments`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...auth(cookie) },
+      body: JSON.stringify({ body: '确认已修复' }),
+    });
+    expect(comment.status).toBe(201);
+    const comments = (await (
+      await app.request(`/api/findings/${findingId}/comments`, { headers: auth(cookie) })
+    ).json()) as { comments: unknown[] };
+    expect(comments.comments).toHaveLength(1);
+
+    const decision = await app.request(`/api/reviews/${reviewId}/decision`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...auth(cookie) },
+      body: JSON.stringify({ decision: 'approve', comment: 'LGTM' }),
+    });
+    expect(decision.status).toBe(200);
+
+    const after = (await (
+      await app.request(`/api/reviews/${reviewId}`, { headers: auth(cookie) })
+    ).json()) as {
+      findings: Array<{ id: number; status?: string }>;
+      meta: Record<string, unknown>;
+    };
+    expect(after.meta).toMatchObject({ decision: 'approve', decisionComment: 'LGTM' });
+    expect(after.findings[0]?.status).toBe('fixed');
+
+    const history = await app.request(`/api/reviews/${reviewId}/decisions`, {
+      headers: auth(cookie),
+    });
+    expect(history.status).toBe(200);
+    const historyBody = (await history.json()) as {
+      decisions: Array<{ decision: string; comment: string | null }>;
+    };
+    expect(historyBody.decisions).toHaveLength(1);
+    expect(historyBody.decisions[0]).toMatchObject({ decision: 'approve', comment: 'LGTM' });
+
+    const secondId = await startReview(app, cookie);
+    await vi.waitFor(async () => {
+      const response = await app.request(`/api/reviews/${secondId}`, { headers: auth(cookie) });
+      expect(response.status).toBe(200);
+    });
+    const compare = await app.request(`/api/reviews/${secondId}/compare?baseId=${reviewId}`, {
+      headers: auth(cookie),
+    });
+    expect(compare.status).toBe(200);
+    const compareBody = (await compare.json()) as {
+      compare: { summary: { added: number; resolved: number; persisting: number } };
+    };
+    expect(compareBody.compare.summary.persisting).toBe(1);
   });
 
   it('returns 404 for unknown reviews', async () => {

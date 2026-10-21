@@ -304,3 +304,12 @@ describe('runCustomRules edge cases', () => {
     expect(findings[0]).toMatchObject({ lineStart: 2, lineEnd: 2 });
   });
 });
+
+describe('custom rule safety', () => {
+  it('rejects catastrophic backtracking patterns instead of blocking the process', () => {
+    expect(compileCustomRulePattern(makeRule({ pattern: '(a+)+$' }))).toBeNull();
+    expect(compileCustomRulePattern(makeRule({ pattern: '(.*)*' }))).toBeNull();
+    // 正常分组量词不受影响
+    expect(compileCustomRulePattern(makeRule({ pattern: '(TODO|FIXME)' }))).not.toBeNull();
+  });
+});

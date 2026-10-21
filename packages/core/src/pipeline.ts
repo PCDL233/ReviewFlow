@@ -1,8 +1,14 @@
 import { END, MemorySaver, START, StateGraph } from '@langchain/langgraph';
-import type { CompiledStateGraph, StateDefinition } from '@langchain/langgraph';
+import type {
+  BaseCheckpointSaver,
+  CompiledStateGraph,
+  StateDefinition,
+} from '@langchain/langgraph';
 import {
   HEAL_CONFIDENCE_THRESHOLD,
   MAX_HEAL_ROUNDS,
+  createRunMetricsAccumulator,
+  makeContextNode,
   makeHealNode,
   makeParseNode,
   makePlanNode,
@@ -11,17 +17,23 @@ import {
   makeStaticReviewNode,
   makeValidateNode,
 } from './nodes.js';
-import type { PipelineDeps } from './nodes.js';
+import type { PipelineDeps, RunMetricsAccumulator } from './nodes.js';
 import { reviewStateAnnotation } from './state.js';
 import type { ReviewState } from './state.js';
 
 export type { PipelineDeps } from './nodes.js';
+
+/** 创建一次审查使用的检查点存储（同一 deps 重试时复用即可从上次节点续跑） */
+export function createReviewCheckpointer(): BaseCheckpointSaver {
+  return new MemorySaver();
+}
 
 /** 流水线节点名，与 SSE 进度事件（Dashboard 实时进度条）的 stage 值一一对应。
  * 规划节点名为 riskPlan：LangGraph 禁止节点名与状态字段（plan channel）同名。 */
 export type PipelineNodeName =
   | 'parse'
   | 'riskPlan'
+  | 'buildContext'
   | 'correctness'
   | 'security'
   | 'performance'
@@ -65,31 +77,38 @@ export function routeAfterValidate(state: ReviewState): 'heal' | 'report' {
  * @param deps 流水线依赖（面向接口注入）
  * @returns 编译后的图（可 invoke / stream）
  */
-export function buildPipeline(deps: PipelineDeps): CompiledReviewPipeline {
+export function buildPipeline(
+  deps: PipelineDeps,
+  runMetrics: RunMetricsAccumulator = createRunMetricsAccumulator(),
+): CompiledReviewPipeline {
   return (
     new StateGraph(reviewStateAnnotation)
       .addNode('parse', makeParseNode(deps))
-      .addNode('riskPlan', makePlanNode(deps))
-      .addNode('correctness', makeReviewNode('correctness', deps))
-      .addNode('security', makeReviewNode('security', deps))
-      .addNode('performance', makeReviewNode('performance', deps))
+      .addNode('riskPlan', makePlanNode(deps, runMetrics))
+      // 规模上限前置：先按风险分截断，再只对入选文件构建 AST/RAG 上下文
+      .addNode('buildContext', makeContextNode(deps))
+      .addNode('correctness', makeReviewNode('correctness', deps, runMetrics))
+      .addNode('security', makeReviewNode('security', deps, runMetrics))
+      .addNode('performance', makeReviewNode('performance', deps, runMetrics))
       .addNode('static', makeStaticReviewNode(deps))
       .addNode('validate', makeValidateNode())
-      .addNode('heal', makeHealNode(deps))
-      .addNode('report', makeReportNode(Date.now()))
+      .addNode('heal', makeHealNode(deps, runMetrics))
+      .addNode('report', makeReportNode(Date.now(), runMetrics))
       .addEdge(START, 'parse')
       .addEdge('parse', 'riskPlan')
+      .addEdge('riskPlan', 'buildContext')
+      // 静态优先：先产出确定性证据，再让三个维度带着证据并行审查（历史缺陷：并行时 LLM 看不到静态结论）
+      .addEdge('buildContext', 'static')
       // fan-out：同一节点的多条出边即并行分支（LangGraph superstep 模型）
-      .addEdge('riskPlan', 'correctness')
-      .addEdge('riskPlan', 'security')
-      .addEdge('riskPlan', 'performance')
-      .addEdge('riskPlan', 'static')
+      .addEdge('static', 'correctness')
+      .addEdge('static', 'security')
+      .addEdge('static', 'performance')
       // fan-in：源数组表示汇聚点等待全部分支完成
-      .addEdge(['correctness', 'security', 'performance', 'static'] as const, 'validate')
+      .addEdge(['correctness', 'security', 'performance'] as const, 'validate')
       .addConditionalEdges('validate', routeAfterValidate)
       .addEdge('heal', 'validate')
       .addEdge('report', END)
-      .compile({ checkpointer: new MemorySaver() })
+      .compile({ checkpointer: deps.checkpointer ?? new MemorySaver() })
   );
 }
 
@@ -106,6 +125,7 @@ function isNamedNodeUpdate(entry: [string, unknown]): entry is [PipelineNodeName
     [
       'parse',
       'riskPlan',
+      'buildContext',
       'correctness',
       'security',
       'performance',

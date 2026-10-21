@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { FindingSchema } from './finding.js';
+import { FINDING_STATUSES } from './finding.js';
+import { LLM_RUNTIME_STATUSES } from './llm.js';
 import { AiReviewConfigSchema, CustomRuleSchema } from './config-schema.js';
 import { ReviewReportSchema } from './report.js';
 import { CUSTOM_RULE_MATCH_SCOPES } from './config-schema.js';
@@ -10,6 +12,22 @@ import { EXIT_CODES } from './exit-codes.js';
 export * from './auth.js';
 export { FindingSchema } from './finding.js';
 export type { Finding } from './finding.js';
+// 发现来源/行号语义/处置状态：详情页与统计页共用同一枚举
+export {
+  FINDING_ORIGINS,
+  FINDING_LINE_SCOPES,
+  FINDING_STATUSES,
+  resolveFindingOrigin,
+} from './finding.js';
+export type { FindingOrigin, FindingLineScope, FindingStatus } from './finding.js';
+// LLM 运行时状态：报告横幅与管理台可观测页共用
+export { LLM_RUNTIME_STATUSES, describeLlmStatus } from './llm.js';
+export type { LlmRuntimeStatus } from './llm.js';
+// 评分与指纹：前端展示与后端判定同一口径
+export { computeReviewScore, ensureFindingFingerprint, fingerprintFinding } from './score.js';
+// 严重度与阻断判定：详情页与 Hook/CI 使用同一阈值函数
+export { SEVERITY_RANK, severityMeetsThreshold } from './severity.js';
+export type { AgentDimension, Severity } from './severity.js';
 // 自定义规则 schema 与匹配范围枚举：供管理后台规则表单与试跑面板消费
 export { CustomRuleSchema, CUSTOM_RULE_MATCH_SCOPES } from './config-schema.js';
 export type { CustomRule, CustomRuleMatchScope } from './config-schema.js';
@@ -96,6 +114,79 @@ export const ReviewReportDetailSchema = ReviewReportSchema.extend({
 });
 export type ReviewReportDetail = z.infer<typeof ReviewReportDetailSchema>;
 
+/** 单次模型尝试（降级链的可观测记录） */
+export const LlmCallAttemptSchema = z.object({
+  kind: z.string(),
+  provider: z.string(),
+  model: z.string(),
+  status: z.enum(['succeeded', 'failed']),
+  latencyMs: z.number(),
+  errorKind: z.string().optional(),
+  message: z.string().optional(),
+});
+
+/** 一次维度调用（llm_calls 行；自愈轮次单独一条） */
+export const LlmCallSchema = z.object({
+  dimension: z.string(),
+  provider: z.string(),
+  model: z.string(),
+  status: z.enum(LLM_RUNTIME_STATUSES),
+  round: z.number().int().nonnegative(),
+  promptTokens: z.number().int().nonnegative(),
+  completionTokens: z.number().int().nonnegative(),
+  totalTokens: z.number().int().nonnegative(),
+  estimated: z.boolean(),
+  latencyMs: z.number().nonnegative(),
+  promptChars: z.number().int().nonnegative(),
+  fallbackUsed: z.boolean(),
+  attempts: z.array(LlmCallAttemptSchema),
+});
+export type LlmCall = z.infer<typeof LlmCallSchema>;
+
+/** 单个流水线节点落库记录（checkpoint/审计：进程重启后仍可回溯执行到哪一步） */
+export const ReviewStageSchema = z.object({
+  id: z.number().int().positive(),
+  node: z.string(),
+  status: z.enum(['completed', 'failed']),
+  startedAt: z.string(),
+  finishedAt: z.string(),
+  durationMs: z.number().nonnegative(),
+  detail: z.string().optional(),
+});
+export type ReviewStage = z.infer<typeof ReviewStageSchema>;
+
+/** GET /api/reviews/:id/trace：审查结论 + 模型调用明细 + 节点检查点 */
+export const ReviewTraceSchema = z.object({
+  reviewId: z.string(),
+  llmCalls: z.array(LlmCallSchema),
+  stages: z.array(ReviewStageSchema),
+  summary: z.object({
+    durationMs: z.number(),
+    tokenUsed: z.number().int().nonnegative(),
+    reviewScore: z.number(),
+    changeRiskScore: z.number().optional(),
+    llmStatus: z.enum(LLM_RUNTIME_STATUSES).optional(),
+    cacheHits: z.number().int().nonnegative(),
+    healRounds: z.number().int().nonnegative(),
+    filesReviewed: z.number().int().nonnegative().optional(),
+    dimensions: z.array(z.string()).optional(),
+  }),
+});
+export type ReviewTrace = z.infer<typeof ReviewTraceSchema>;
+export const ReviewTraceResponseSchema = z.object({ trace: ReviewTraceSchema });
+
+/** 管理台可观测页查询参数 */
+export const LlmCallListQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(1000).default(100),
+});
+export type LlmCallListQuery = z.infer<typeof LlmCallListQuerySchema>;
+export const LlmCallListItemSchema = LlmCallSchema.extend({
+  reviewId: z.string(),
+  createdAt: z.string(),
+});
+export const LlmCallListResponseSchema = z.object({ calls: z.array(LlmCallListItemSchema) });
+export type LlmCallListResponse = z.infer<typeof LlmCallListResponseSchema>;
+
 /**
  * 审查进度事件（SSE，方案 3.9 → Dashboard 实时进度条）。
  * `stage` 为流水线节点名（parse/riskPlan/correctness/security/performance/static/validate/heal/report）。
@@ -146,6 +237,95 @@ export const ReviewDiffResponseSchema = z.object({ diffText: z.string().nullable
 /** PATCH /api/findings/:id → 200 */
 export const FalsePositiveResponseSchema = z.object({ updated: z.boolean() });
 
+/** PATCH /api/findings/:id：状态/误报/原因（至少提供一个字段） */
+export const FindingUpdateSchema = z
+  .object({
+    isFalsePositive: z.boolean().optional(),
+    status: z.enum(FINDING_STATUSES).optional(),
+    /** 处置原因/备注（≤500 字，供误报回流与审计） */
+    reason: z.string().trim().max(500).optional(),
+  })
+  .refine((value) => value.isFalsePositive !== undefined || value.status !== undefined, {
+    message: '至少提供 isFalsePositive 或 status',
+  });
+export type FindingUpdate = z.infer<typeof FindingUpdateSchema>;
+
+/** 发现评论（人工协作；不参与流水线判定） */
+export const FindingCommentSchema = z.object({
+  id: z.number().int().positive(),
+  findingId: z.number().int().positive(),
+  userId: z.string().nullable(),
+  username: z.string(),
+  body: z.string(),
+  createdAt: z.string(),
+});
+export type FindingComment = z.infer<typeof FindingCommentSchema>;
+export const FindingCommentCreateSchema = z.object({
+  body: z.string().trim().min(1).max(2_000),
+});
+export type FindingCommentCreate = z.infer<typeof FindingCommentCreateSchema>;
+export const FindingCommentListResponseSchema = z.object({
+  comments: z.array(FindingCommentSchema),
+});
+
+/** 审查决策（人工处置结论；不改变已生成的报告与退出码） */
+export const REVIEW_DECISIONS = ['approve', 'request_changes', 'comment'] as const;
+export const ReviewDecisionSchema = z.enum(REVIEW_DECISIONS);
+export type ReviewDecision = z.infer<typeof ReviewDecisionSchema>;
+export const ReviewDecisionRequestSchema = z.object({
+  decision: ReviewDecisionSchema,
+  comment: z.string().trim().max(2_000).optional(),
+});
+export type ReviewDecisionRequest = z.infer<typeof ReviewDecisionRequestSchema>;
+export const ReviewDecisionResponseSchema = z.object({
+  reviewId: z.string(),
+  decision: ReviewDecisionSchema,
+  decidedBy: z.string().nullable(),
+  decidedAt: z.string().nullable(),
+});
+
+/** 决策历史（append-only） */
+export const ReviewDecisionEventSchema = z.object({
+  id: z.number().int().positive(),
+  reviewId: z.string(),
+  decision: ReviewDecisionSchema,
+  comment: z.string().nullable(),
+  decidedBy: z.string(),
+  createdAt: z.string(),
+});
+export type ReviewDecisionEvent = z.infer<typeof ReviewDecisionEventSchema>;
+export const ReviewDecisionHistoryResponseSchema = z.object({
+  decisions: z.array(ReviewDecisionEventSchema),
+});
+
+/** 两次审查对比：按指纹判断新增/已修复/仍存在 */
+export const ReviewCompareSchema = z.object({
+  reviewId: z.string(),
+  baseId: z.string(),
+  summary: z.object({
+    added: z.number().int().nonnegative(),
+    resolved: z.number().int().nonnegative(),
+    persisting: z.number().int().nonnegative(),
+  }),
+  added: z.array(IdentifiedFindingSchema),
+  resolved: z.array(IdentifiedFindingSchema),
+  persisting: z.array(IdentifiedFindingSchema),
+});
+export type ReviewCompare = z.infer<typeof ReviewCompareSchema>;
+export const ReviewCompareResponseSchema = z.object({ compare: ReviewCompareSchema });
+
+/** PR 评论回写（GitHub Issues Comments API） */
+export const PrCommentWriteRequestSchema = z.object({
+  repo: z
+    .string()
+    .regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/, 'repo 需为 owner/name')
+    .max(200),
+  pullNumber: z.number().int().min(1).max(10_000_000),
+});
+export type PrCommentWriteRequest = z.infer<typeof PrCommentWriteRequestSchema>;
+export const PrCommentWriteResponseSchema = z.object({ url: z.string() });
+export type PrCommentWriteResponse = z.infer<typeof PrCommentWriteResponseSchema>;
+
 /** —— 统计分析（方案 3.10 页面 4：ECharts 数据源，全部由 db 聚合产出）—— */
 
 /** 严重度维度的发现计数（含 PRAISE，与 Finding 契约的严重度字面量一致） */
@@ -177,6 +357,20 @@ export const ReviewStatsQuerySchema = z.object({
   to: z.string().trim().min(1).optional(),
 });
 export type ReviewStatsQuery = z.infer<typeof ReviewStatsQuerySchema>;
+
+/** 规则命中统计（按 ruleId 聚合；仅统计自定义规则命中的发现） */
+export const RuleHitStatSchema = z.object({
+  ruleId: z.string(),
+  count: z.number().int().nonnegative(),
+  blocker: z.number().int().nonnegative(),
+  warning: z.number().int().nonnegative(),
+  nit: z.number().int().nonnegative(),
+  falsePositives: z.number().int().nonnegative(),
+});
+export type RuleHitStat = z.infer<typeof RuleHitStatSchema>;
+export const RuleHitStatsResponseSchema = z.object({
+  rules: z.array(RuleHitStatSchema),
+});
 
 export const AgentCountSchema = z.object({
   agent: z.string(),
@@ -247,6 +441,8 @@ export const KnowledgeStatusSchema = z.object({
   paths: z.array(z.string()),
   lastIndexedAt: z.string().nullable(),
   error: z.string().nullable(),
+  /** 该状态对应的仓库（按仓库隔离索引；旧服务端缺省） */
+  repoPath: z.string().optional(),
 });
 export type KnowledgeStatus = z.infer<typeof KnowledgeStatusSchema>;
 export const KnowledgeStatusResponseSchema = z.object({ knowledge: KnowledgeStatusSchema });
@@ -423,6 +619,19 @@ export const StartReviewSchema = z.object({
   base: GitRefSchema.optional(),
   /** target=commit 时的提交引用 */
   commit: GitRefSchema.optional(),
+  /** 本次审查启用的 LLM 维度（缺省用配置值；maintainability 会被流水线过滤） */
+  dimensions: z
+    .array(z.enum(['correctness', 'security', 'performance', 'maintainability']))
+    .min(1)
+    .optional(),
+  /** 单次审查文件数上限（缺省用配置 review.maxFiles） */
+  maxFiles: z.number().int().min(1).max(2_000).optional(),
+  /** 单次审查变更行数上限（缺省用配置 review.maxChangedLines） */
+  maxChangedLines: z.number().int().min(100).max(200_000).optional(),
+  /** 本次是否允许模型调用只读工具（缺省用配置 review.toolCalling） */
+  toolCalling: z.boolean().optional(),
+  /** 是否保留 PRAISE 级发现（缺省用配置 report.includePraise） */
+  includePraise: z.boolean().optional(),
 });
 export type StartReviewInput = z.infer<typeof StartReviewSchema>;
 

@@ -1,4 +1,11 @@
-import { AGENT_DIMENSIONS, SEVERITIES } from '@ai-review/shared';
+import {
+  AGENT_DIMENSIONS,
+  FINDING_LINE_SCOPES,
+  FINDING_ORIGINS,
+  FINDING_STATUSES,
+  LLM_RUNTIME_STATUSES,
+  SEVERITIES,
+} from '@ai-review/shared';
 import { index, integer, primaryKey, real, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 /**
@@ -42,6 +49,29 @@ export const reviews = sqliteTable('reviews', {
    * 软引用：不建 FK——存量 CLI 直跑的记录无发起人，且删除用户时历史审查应保留。
    */
   createdBy: text('created_by'),
+  /** 0-100 变更风险分（RiskPlanner 输出，与审查结论分分离） */
+  changeRiskScore: real('change_risk_score'),
+  /** 0-100 审查结论分（发现加权） */
+  reviewScore: real('review_score'),
+  /** 本次审查的 LLM 运行时状态；NULL 表示旧记录（视为正常） */
+  llmStatus: text('llm_status', { enum: LLM_RUNTIME_STATUSES }),
+  /** 审查 Prompt 版本（回溯与缓存失效依据） */
+  promptVersion: text('prompt_version'),
+  /** 内容哈希缓存命中的文件数 */
+  cacheHits: integer('cache_hits').notNull().default(0),
+  /** 自愈复核轮次 */
+  healRounds: integer('heal_rounds').notNull().default(0),
+  /** 实际启用的审查维度（JSON 数组字符串） */
+  dimensions: text('dimensions'),
+  /** 重跑来源审查 id（链路追溯） */
+  parentReviewId: text('parent_review_id'),
+  /** 人工审查决策：approve / request_changes / comment */
+  decision: text('decision', { enum: ['approve', 'request_changes', 'comment'] }),
+  /** 决策备注 */
+  decisionComment: text('decision_comment'),
+  /** 决策人用户 id */
+  decidedBy: text('decided_by'),
+  decidedAt: text('decided_at'),
   createdAt: text('created_at')
     .notNull()
     .$defaultFn(() => new Date().toISOString()),
@@ -70,11 +100,119 @@ export const findings = sqliteTable(
     lowConfidence: integer('low_confidence', { mode: 'boolean' }).notNull().default(false),
     /** Dashboard 误报标记，回流为置信度模型优化数据（方案 3.10） */
     isFalsePositive: integer('is_false_positive', { mode: 'boolean' }).notNull().default(false),
+    /** 问题指纹：跨维度/跨轮次/缓存复用的稳定身份 */
+    fingerprint: text('fingerprint'),
+    /** 发现来源：llm / static / heal / cross-file / cache */
+    origin: text('origin', { enum: FINDING_ORIGINS }),
+    /** 行号语义：changed（变更行）/ context（上下文行，不阻断） */
+    lineScope: text('line_scope', { enum: FINDING_LINE_SCOPES }),
+    /** 同一问题命中的维度列表（JSON 数组字符串） */
+    agents: text('agents'),
+    /** 人工处置状态（open/acknowledged/fixed/ignored/false_positive） */
+    status: text('status', { enum: FINDING_STATUSES }).notNull().default('open'),
+    /** 命中的自定义规则 id（规则命中溯源） */
+    ruleId: text('rule_id'),
+    /** 产出该发现的审查轮次（0=首轮，1..=自愈） */
+    reviewRound: integer('review_round').notNull().default(0),
+    updatedAt: text('updated_at'),
     createdAt: text('created_at')
       .notNull()
       .$defaultFn(() => new Date().toISOString()),
   },
-  (table) => [index('idx_findings_review').on(table.reviewId)],
+  (table) => [
+    index('idx_findings_review').on(table.reviewId),
+    index('idx_findings_fingerprint').on(table.fingerprint),
+  ],
+);
+
+/** 发现评论表：人工协作记录，不参与流水线判定 */export const findingComments = sqliteTable(
+  'finding_comments',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    findingId: integer('finding_id')
+      .notNull()
+      .references(() => findings.id),
+    /** 评论人；账号删除后保留用户名（软引用） */
+    userId: text('user_id'),
+    username: text('username').notNull(),
+    body: text('body').notNull(),
+    createdAt: text('created_at')
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [index('idx_finding_comments_finding').on(table.findingId)],
+);
+
+/** 审查决策历史（append-only；reviews 表保留最新决策，便于列表查询） */
+export const reviewDecisionEvents = sqliteTable(
+  'review_decision_events',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    reviewId: text('review_id').notNull(),
+    decision: text('decision', { enum: ['approve', 'request_changes', 'comment'] }).notNull(),
+    comment: text('comment'),
+    decidedBy: text('decided_by').notNull(),
+    createdAt: text('created_at').notNull(),
+  },
+  (table) => [index('idx_review_decision_events_review').on(table.reviewId)],
+);
+
+/**
+ * 流水线节点检查点（每完成一个节点落一行）。
+ * 与 SSE 的实时事件互补：进程重启后仍能回答“这次审查执行到哪、每个节点耗时多少”。
+ */
+export const reviewStages = sqliteTable(
+  'review_stages',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    reviewId: text('review_id').notNull(),
+    node: text('node').notNull(),
+    status: text('status', { enum: ['completed', 'failed'] }).notNull(),
+    startedAt: text('started_at').notNull(),
+    finishedAt: text('finished_at').notNull(),
+    durationMs: integer('duration_ms').notNull().default(0),
+    /** 节点摘要（JSON 字符串；不存整份 state，避免重复膨胀） */
+    detail: text('detail'),
+  },
+  (table) => [index('idx_review_stages_review').on(table.reviewId)],
+);
+
+/**
+ * 模型调用审计表（一次维度调用一行；自愈轮次单独一行）。
+ * 与 reviews.token_used 的区别：这里保留每次调用的 provider/model/usage/耗时/失败原因，
+ * 用于回答“为什么降级、为什么这次审查没调用模型、哪个维度最贵”。
+ */
+export const llmCalls = sqliteTable(
+  'llm_calls',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    reviewId: text('review_id')
+      .notNull()
+      .references(() => reviews.id),
+    dimension: text('dimension').notNull(),
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    status: text('status', { enum: LLM_RUNTIME_STATUSES }).notNull(),
+    /** 0=首轮；1..=自愈轮次 */
+    round: integer('round').notNull().default(0),
+    promptTokens: integer('prompt_tokens').notNull().default(0),
+    completionTokens: integer('completion_tokens').notNull().default(0),
+    totalTokens: integer('total_tokens').notNull().default(0),
+    /** usage 是否为字符数估算（provider 未返回 usage 时） */
+    estimated: integer('estimated', { mode: 'boolean' }).notNull().default(false),
+    latencyMs: integer('latency_ms').notNull().default(0),
+    promptChars: integer('prompt_chars').notNull().default(0),
+    fallbackUsed: integer('fallback_used', { mode: 'boolean' }).notNull().default(false),
+    /** 降级链每次尝试（JSON 数组字符串） */
+    attemptsJson: text('attempts_json').notNull().default('[]'),
+    createdAt: text('created_at')
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    index('idx_llm_calls_review').on(table.reviewId),
+    index('idx_llm_calls_created').on(table.createdAt),
+  ],
 );
 
 /**
@@ -281,6 +419,10 @@ export const hookTokens = sqliteTable(
 
 export type ReviewRow = typeof reviews.$inferSelect;
 export type FindingRow = typeof findings.$inferSelect;
+export type FindingCommentRow = typeof findingComments.$inferSelect;
+export type ReviewDecisionEventRow = typeof reviewDecisionEvents.$inferSelect;
+export type ReviewStageRow = typeof reviewStages.$inferSelect;
+export type LlmCallRow = typeof llmCalls.$inferSelect;
 export type ReviewCacheRow = typeof reviewCache.$inferSelect;
 export type UserRow = typeof users.$inferSelect;
 export type SessionRow = typeof sessions.$inferSelect;

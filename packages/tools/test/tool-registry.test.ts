@@ -128,3 +128,35 @@ describe('resolveEnabledTools', () => {
     expect(resolveEnabledTools(['ast_parse'], [])).toEqual(['ast_parse']);
   });
 });
+
+describe('ToolRegistry isolation', () => {
+  const finding: Finding = {
+    agent: 'static',
+    severity: 'NIT',
+    confidence: 0.9,
+    filePath: 'a.ts',
+    lineStart: 1,
+    lineEnd: 1,
+    title: 'good tool finding',
+    description: 'from the healthy tool',
+    isFalsePositive: false,
+  };
+
+  it('keeps other tools running when one tool throws', () => {
+    const registry = new ToolRegistry();
+    registry.register({
+      name: 'broken',
+      description: 'always throws',
+      run: () => {
+        throw new Error('boom');
+      },
+    });
+    registry.register({ name: 'good', description: 'healthy', run: () => [finding] });
+
+    const findings = registry.runAll(makeContext(['a.ts']), ['broken', 'good']);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.title).toBe('good tool finding');
+    expect(registry.getFailures()).toEqual([{ tool: 'broken', message: 'boom' }]);
+  });
+});

@@ -1,4 +1,4 @@
-import { SEVERITY_RANK } from '@ai-review/shared';
+import { SEVERITY_RANK, ensureFindingFingerprint, resolveFindingOrigin } from '@ai-review/shared';
 import type { CodeContext, Finding } from '@ai-review/shared';
 
 /** 静态分析发现的确定性来源决定高基础置信度（方案 3.6 阶段 2） */
@@ -10,6 +10,11 @@ const CROSS_SOURCE_BONUS = 0.2;
 
 function overlaps(a: Finding, b: Finding): boolean {
   return a.lineStart <= b.lineEnd && b.lineStart <= a.lineEnd;
+}
+
+function isStaticFinding(finding: Finding): boolean {
+  // 来源优先于 agent 字段：即使 agent 被外部改写，静态来源仍按静态基线计分
+  return resolveFindingOrigin(finding) === 'static';
 }
 
 /**
@@ -45,13 +50,16 @@ export function reclassifySeverity(findings: readonly Finding[], context: CodeCo
  */
 export function scoreConfidence(findings: readonly Finding[]): Finding[] {
   return findings.map((finding) => {
-    const base = finding.agent === 'static' ? STATIC_BASE_CONFIDENCE : LLM_BASE_CONFIDENCE;
+    const base = isStaticFinding(finding) ? STATIC_BASE_CONFIDENCE : LLM_BASE_CONFIDENCE;
+    // 只有“确定性来源”的确认才给 LLM 发现提分：两个 LLM 维度基于同一段上下文互相附和，
+    // 不构成独立证据；若据此提分，会把模型自己标注的 lowConfidence(0.4) 抬到 0.8，
+    // 自愈回退永远不会触发（历史缺陷）。静态发现本身可被任意来源进一步确认。
     const crossConfirmed = findings.some(
       (other) =>
         other !== finding &&
-        other.agent !== finding.agent &&
         other.filePath === finding.filePath &&
-        overlaps(other, finding),
+        overlaps(other, finding) &&
+        (isStaticFinding(finding) || isStaticFinding(other)),
     );
     const confidence = crossConfirmed
       ? Math.min(1, base + CROSS_SOURCE_BONUS)
@@ -62,24 +70,36 @@ export function scoreConfidence(findings: readonly Finding[]): Finding[] {
 
 /**
  * 阶段 5：去重（方案 3.6）。
- * 按"文件 + Agent 维度 + 标题 + 行区间重叠"聚类；同簇保留后写入的版本——
- * 交叉验证修正与自愈回退的重审结果由此覆盖流水线早期的原始发现，
- * 而并行分支（不同 Agent 维度）落在不同簇内互不影响。
+ * 按“问题指纹”（文件 + 规则/维度 + 归一化标题 + 行区间）聚类，**跨维度合并**：
+ * 同一缺陷被正确性/安全/性能同时命中时，报告只保留一条并记录 agents 列表，
+ * 而不是按 agent 分成三条（历史缺陷：三个维度报告同一问题三遍）。
+ * 同簇保留置信度更高者；置信度相同时保留后写入的版本（自愈/交叉验证修正覆盖原始结论）。
  */
 export function dedupeFindings(findings: readonly Finding[]): Finding[] {
-  const clusters = new Map<string, Finding[]>();
-  for (const finding of findings) {
-    const key = `${finding.filePath}::${finding.agent}::${finding.title}`;
-    const group = clusters.get(key) ?? [];
-    const overlappingIndex = group.findIndex((existing) => overlaps(existing, finding));
-    if (overlappingIndex === -1) {
-      group.push(finding);
-    } else {
-      group[overlappingIndex] = finding;
+  const clusters = new Map<string, Finding>();
+  for (const raw of findings) {
+    const finding = ensureFindingFingerprint(raw);
+    const key =
+      finding.fingerprint ??
+      `${finding.filePath}\u0000${finding.agent}\u0000${finding.title}\u0000${finding.lineStart}\u0000${finding.lineEnd}`;
+    const existing = clusters.get(key);
+    if (existing === undefined) {
+      clusters.set(key, finding);
+      continue;
     }
-    clusters.set(key, group);
+    const agents = [
+      ...new Set([
+        existing.agent,
+        finding.agent,
+        ...(existing.agents ?? []),
+        ...(finding.agents ?? []),
+      ]),
+    ];
+    // 后写覆盖：交叉验证/自愈产出的修正版本必须能覆盖原始结论（即使置信度更低，
+    // 例如复核后把 0.8 修正为 0.4）。若按“取更高置信度”，修正永远无法生效。
+    clusters.set(key, { ...finding, agents });
   }
-  return [...clusters.values()].flat();
+  return [...clusters.values()];
 }
 
 /**
@@ -94,7 +114,9 @@ export function sortFindings(findings: readonly Finding[]): Finding[] {
     if (byConfidence !== 0) return byConfidence;
     const byPath = a.filePath.localeCompare(b.filePath);
     if (byPath !== 0) return byPath;
-    return a.lineStart - b.lineStart;
+    const byLine = a.lineStart - b.lineStart;
+    if (byLine !== 0) return byLine;
+    return (a.fingerprint ?? a.title).localeCompare(b.fingerprint ?? b.title);
   });
 }
 

@@ -16,6 +16,7 @@ describe('buildAdminMenu', () => {
       expect(logs.children.map((child) => child.key)).toEqual([
         '/admin/login-logs',
         '/admin/operation-logs',
+        '/admin/observability',
       ]);
     }
   });
@@ -70,6 +71,7 @@ describe('adminGroupKeyOf', () => {
     expect(adminGroupKeyOf('/admin/hook')).toBe('group:settings');
     expect(adminGroupKeyOf('/admin/login-logs')).toBe('group:logs');
     expect(adminGroupKeyOf('/admin/operation-logs')).toBe('group:logs');
+    expect(adminGroupKeyOf('/admin/observability')).toBe('group:logs');
   });
 
   it('平铺项（概览/指标）无分组，返回 null', () => {

@@ -50,16 +50,36 @@ export const AiReviewConfigSchema = z.object({
     .object({
       provider: z.enum(MODEL_PROVIDER_IDS).default('anthropic'),
       model: z.string().default('claude-sonnet-5'),
+      /** 传输运行时：ai-sdk（SDK 承担重试/usage，后续工具调用）或 http（手写兼容回退） */
+      runtime: z.enum(['ai-sdk', 'http']).default('ai-sdk'),
+      /** 结构化输出：模型按 FindingOutputSchema 返回对象（需模型支持 JSON schema；与 ReAct 工具互斥） */
+      structuredOutput: z.boolean().default(false),
       apiKey: z.string().default('${AI_REVIEW_API_KEY}'),
       baseUrl: z.string().optional(),
       maxTokensPerReview: z.number().int().positive().max(200_000).default(50_000),
       temperature: z.number().min(0).max(2).default(0.1),
       mockFixturesDir: z.string().default('.ai-review-cache/llm-fixtures'),
+      /** 单次模型请求超时（毫秒）；超时按可重试错误处理 */
+      timeoutMs: z.number().int().min(1_000).max(600_000).default(60_000),
+      /** 单次请求的可重试次数（仅 429/5xx/网络/超时重试，鉴权与响应格式错误不重试） */
+      retries: z.number().int().min(0).max(5).default(1),
+      /**
+       * 模型全部不可用时的语义：
+       * - degrade：退回 mock 继续产出静态结论，但报告必须显式标注 llmStatus=unavailable
+       * - fail：整次审查失败，交由调用方重试（Hook/CI 映射退出码 2）
+       */
+      onUnavailable: z.enum(['degrade', 'fail']).default('degrade'),
     })
     .prefault({}),
   review: z
     .object({
       mode: z.enum(['fast', 'full']).default('fast'),
+      /** 是否允许模型在审查中调用只读仓库工具（ReAct）；默认关闭，开启后需模型支持 tool calling */
+      toolCalling: z.boolean().default(false),
+      /** 单次工具执行超时（毫秒）；超时按工具错误返回给模型，不阻塞整次审查 */
+      toolTimeoutMs: z.number().int().min(500).max(60_000).default(10_000),
+      /** 单次审查所有工具输出的累计字符预算；耗尽后返回“预算已用完”，防止工具把上下文撑爆 */
+      toolCharBudget: z.number().int().min(1_000).max(1_000_000).default(120_000),
       dimensions: z
         .array(z.enum(['correctness', 'security', 'performance', 'maintainability']))
         .default(['correctness', 'security', 'performance', 'maintainability']),
@@ -76,9 +96,22 @@ export const AiReviewConfigSchema = z.object({
   rag: z
     .object({
       enabled: z.boolean().default(true),
-      knowledgeBasePaths: z.array(z.string()).default(['docs/']),
+      /**
+       * 知识库索引路径（相对服务进程工作目录）。默认索引整个仓库：
+       * 只索引 docs/ 会让“跨文件/项目约定”召回恒为空，RAG 形同未接入。
+       * 依赖与产物目录（node_modules/dist/.git 等）由索引器自行跳过。
+       */
+      knowledgeBasePaths: z.array(z.string()).default(['.']),
       indexDir: z.string().default('.ai-review-cache/vectors'),
       topK: z.number().int().min(1).max(20).default(5),
+      /** 嵌入模型配置；缺省走本地 Ollama 的 nomic-embed-text */
+      embedding: z
+        .object({
+          model: z.string().default('nomic-embed-text'),
+          baseUrl: z.string().optional(),
+          apiKey: z.string().optional(),
+        })
+        .prefault({}),
     })
     .prefault({}),
   staticAnalysis: z

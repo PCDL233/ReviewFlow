@@ -21,6 +21,19 @@ import {
   ReviewListQuerySchema,
   ReviewStatsQuerySchema,
   ReviewDiffResponseSchema,
+  ReviewTraceResponseSchema,
+  LlmCallListQuerySchema,
+  LlmCallListResponseSchema,
+  FindingUpdateSchema,
+  FindingCommentCreateSchema,
+  FindingCommentListResponseSchema,
+  ReviewDecisionRequestSchema,
+  ReviewDecisionResponseSchema,
+  PrCommentWriteRequestSchema,
+  PrCommentWriteResponseSchema,
+  ReviewDecisionHistoryResponseSchema,
+  ReviewCompareResponseSchema,
+  RuleHitStatsResponseSchema,
   DeleteReviewResponseSchema,
   CancelReviewResponseSchema,
   AdminConfigSchema,
@@ -53,8 +66,9 @@ import {
   describeReviewSource,
   EXIT_CODES,
 } from '@ai-review/shared';
+import { ensureFindingFingerprint } from '@ai-review/shared';
 import type { ReviewSource, ServerRuntime } from '@ai-review/shared';
-import { renderHtml, renderJson, renderMarkdown } from '@ai-review/report';
+import { renderHtml, renderJson, renderMarkdown, renderPrComment } from '@ai-review/report';
 import { analyzeComplexity, compileCustomRulePattern, scanDiffTextForSecrets, testCustomRuleOnSamples } from '@ai-review/tools';
 import {
   createRequireAuth,
@@ -117,8 +131,8 @@ export type AppDeps = {
 };
 
 export type KnowledgeManager = {
-  getStatus(): Promise<unknown> | unknown;
-  reindex(): Promise<void>;
+  getStatus(repoPath?: string): Promise<unknown> | unknown;
+  reindex(repoPath?: string): Promise<void>;
 };
 
 /** SSE 桥接队列：ReviewService 的同步广播 → streamSSE 的异步消费 */
@@ -424,7 +438,13 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       createdBy,
       blockOn,
       source: sourceResult.source,
-      includePraise: liveConfig.report.includePraise,
+      includePraise: body.includePraise ?? liveConfig.report.includePraise,
+      ...(body.dimensions === undefined ? {} : { dimensions: body.dimensions }),
+      ...(body.maxFiles === undefined ? {} : { maxFiles: body.maxFiles }),
+      ...(body.maxChangedLines === undefined
+        ? {}
+        : { maxChangedLines: body.maxChangedLines }),
+      ...(body.toolCalling === undefined ? {} : { toolCalling: body.toolCalling }),
     });
     audit.operation({ ...me, ...meta, action: 'start_review', resource: 'review', resourceId: reviewId, detail: JSON.stringify({ repoPath: body.repoPath, mode, source: describeReviewSource(sourceResult.source) }), status: 'success' });
     return c.json({ reviewId }, 202);
@@ -541,6 +561,84 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     }
   });
 
+  app.get('/api/reviews/:id/pr-comment', (c) => {
+    const current = c.get('user');
+    const reviewId = c.req.param('id');
+    if (!canAccessReview(deps, current, reviewId))
+      return c.json({ error: '审查记录不存在' }, 404);
+    try {
+      const report = deps.store.getReportDetail(reviewId);
+      return c.body(renderPrComment(report), 200, {
+        'content-type': 'text/markdown; charset=utf-8',
+      });
+    } catch (e) {
+      if (e instanceof StoreError) return c.json({ error: e.message }, 404);
+      throw e;
+    }
+  });
+
+  app.post(
+    '/api/reviews/:id/pr-comment',
+    zValidator('json', PrCommentWriteRequestSchema),
+    async (c) => {
+      const current = c.get('user');
+      const reviewId = c.req.param('id');
+      if (!canAccessReview(deps, current, reviewId))
+        return c.json({ error: '审查记录不存在' }, 404);
+      const token = process.env.GITHUB_TOKEN;
+      if (token === undefined || token === '') {
+        return c.json({ error: '未配置 GITHUB_TOKEN，无法回写 PR 评论' }, 400);
+      }
+      const body = c.req.valid('json');
+      let markdown: string;
+      try {
+        markdown = renderPrComment(deps.store.getReportDetail(reviewId));
+      } catch (e) {
+        if (e instanceof StoreError) return c.json({ error: e.message }, 404);
+        throw e;
+      }
+      const apiBase = (process.env.GITHUB_API_BASE ?? 'https://api.github.com').replace(/\/+$/, '');
+      try {
+        const response = await fetch(
+          `${apiBase}/repos/${body.repo}/issues/${body.pullNumber}/comments`,
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${token}`,
+              accept: 'application/vnd.github+json',
+              'content-type': 'application/json',
+              'user-agent': 'reviewflow',
+            },
+            body: JSON.stringify({ body: markdown }),
+          },
+        );
+        if (!response.ok) {
+          return c.json({ error: `GitHub 评论写入失败（HTTP ${response.status}）` }, 502);
+        }
+        const payload = (await response.json()) as { html_url?: unknown };
+        if (typeof payload.html_url !== 'string') {
+          return c.json({ error: 'GitHub 响应缺少 html_url' }, 502);
+        }
+        return c.json(PrCommentWriteResponseSchema.parse({ url: payload.html_url }));
+      } catch {
+        return c.json({ error: 'GitHub 评论写入失败（网络错误）' }, 502);
+      }
+    },
+  );
+
+  app.get('/api/stats/rules', zValidator('query', ReviewStatsQuerySchema), (c) => {
+    const current = c.get('user');
+    const query = c.req.valid('query');
+    return c.json(
+      RuleHitStatsResponseSchema.parse({
+        rules: deps.store.getRuleHitStats(
+          current.role === 'admin' ? undefined : current.id,
+          query,
+        ),
+      }),
+    );
+  });
+
   app.get('/api/stats', zValidator('query', ReviewStatsQuerySchema), (c) => {
     const current = c.get('user');
     const query = c.req.valid('query');
@@ -562,7 +660,132 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     }
   });
 
-  app.patch('/api/findings/:id', zValidator('json', FalsePositiveSchema), (c) => {
+  app.get('/api/reviews/:id/trace', (c) => {
+    const current = c.get('user');
+    const reviewId = c.req.param('id');
+    if (!canAccessReview(deps, current, reviewId))
+      return c.json({ error: '审查记录不存在' }, 404);
+    try {
+      const detail = deps.store.getReportDetail(reviewId);
+      return c.json(
+        ReviewTraceResponseSchema.parse({
+          trace: {
+            reviewId,
+            llmCalls: deps.store.getLlmCalls(reviewId),
+            stages: deps.store.listReviewStages(reviewId),
+            summary: {
+              durationMs: detail.meta.durationMs,
+              tokenUsed: detail.meta.tokenUsed,
+              reviewScore: detail.meta.reviewScore ?? detail.meta.riskScore,
+              ...(detail.meta.changeRiskScore === undefined
+                ? {}
+                : { changeRiskScore: detail.meta.changeRiskScore }),
+              ...(detail.meta.llmStatus === undefined
+                ? {}
+                : { llmStatus: detail.meta.llmStatus }),
+              cacheHits: detail.meta.cacheHits ?? 0,
+              healRounds: detail.meta.healRounds ?? 0,
+              ...(detail.meta.dimensions === undefined
+                ? {}
+                : { dimensions: detail.meta.dimensions }),
+            },
+          },
+        }),
+      );
+    } catch (e) {
+      if (e instanceof StoreError) return c.json({ error: e.message }, 404);
+      throw e;
+    }
+  });
+
+  app.post(
+    '/api/reviews/:id/decision',
+    zValidator('json', ReviewDecisionRequestSchema),
+    (c) => {
+      const current = c.get('user');
+      const reviewId = c.req.param('id');
+      if (!canAccessReview(deps, current, reviewId))
+        return c.json({ error: '审查记录不存在' }, 404);
+      const body = c.req.valid('json');
+      if (!deps.store.setReviewDecision(reviewId, body.decision, body.comment, current.id)) {
+        return c.json({ error: '审查记录不存在' }, 404);
+      }
+      audit.operation({
+        userId: current.id,
+        username: current.username,
+        ...requestMeta(c),
+        action: 'update',
+        resource: 'review',
+        resourceId: reviewId,
+        detail: JSON.stringify({ decision: body.decision }),
+        status: 'success',
+      });
+      return c.json(
+        ReviewDecisionResponseSchema.parse({
+          reviewId,
+          decision: body.decision,
+          decidedBy: current.id,
+          decidedAt: new Date().toISOString(),
+        }),
+      );
+    },
+  );
+
+  app.get('/api/reviews/:id/decisions', (c) => {
+    const current = c.get('user');
+    const reviewId = c.req.param('id');
+    if (!canAccessReview(deps, current, reviewId))
+      return c.json({ error: '审查记录不存在' }, 404);
+    return c.json(
+      ReviewDecisionHistoryResponseSchema.parse({
+        decisions: deps.store.listReviewDecisionEvents(reviewId),
+      }),
+    );
+  });
+
+  app.get('/api/reviews/:id/compare', (c) => {
+    const current = c.get('user');
+    const reviewId = c.req.param('id');
+    const baseId = c.req.query('baseId');
+    if (baseId === undefined || baseId === '') {
+      return c.json({ error: '缺少 baseId（要对比的历史审查）' }, 400);
+    }
+    if (!canAccessReview(deps, current, reviewId) || !canAccessReview(deps, current, baseId)) {
+      return c.json({ error: '审查记录不存在' }, 404);
+    }
+    try {
+      const currentDetail = deps.store.getReportDetail(reviewId);
+      const baseDetail = deps.store.getReportDetail(baseId);
+      const keyOf = (finding: (typeof currentDetail.findings)[number]): string =>
+        ensureFindingFingerprint(finding).fingerprint ?? '';
+      const baseKeys = new Set(baseDetail.findings.map(keyOf));
+      const currentKeys = new Set(currentDetail.findings.map(keyOf));
+      const added = currentDetail.findings.filter((finding) => !baseKeys.has(keyOf(finding)));
+      const resolved = baseDetail.findings.filter((finding) => !currentKeys.has(keyOf(finding)));
+      const persisting = currentDetail.findings.filter((finding) => baseKeys.has(keyOf(finding)));
+      return c.json(
+        ReviewCompareResponseSchema.parse({
+          compare: {
+            reviewId,
+            baseId,
+            summary: {
+              added: added.length,
+              resolved: resolved.length,
+              persisting: persisting.length,
+            },
+            added,
+            resolved,
+            persisting,
+          },
+        }),
+      );
+    } catch (e) {
+      if (e instanceof StoreError) return c.json({ error: e.message }, 404);
+      throw e;
+    }
+  });
+
+  app.patch('/api/findings/:id', zValidator('json', FindingUpdateSchema), (c) => {
     const id = Number(c.req.param('id'));
     if (!Number.isInteger(id) || id <= 0) {
       return c.json({ error: '发现 ID 无效' }, 400);
@@ -574,14 +797,75 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       audit.operation({ userId: current.id, username: current.username, ...meta, action: 'mark_false_positive', resource: 'finding', resourceId: String(id), status: 'failed', reason: 'not-found' });
       return c.json({ error: '发现记录不存在' }, 404);
     }
-    const { isFalsePositive } = c.req.valid('json');
-    if (!deps.store.setFindingFalsePositive(id, isFalsePositive)) {
+    const body = c.req.valid('json');
+    const updated = deps.store.updateFinding(id, {
+      ...(body.isFalsePositive === undefined ? {} : { isFalsePositive: body.isFalsePositive }),
+      ...(body.status === undefined ? {} : { status: body.status }),
+    });
+    if (!updated) {
       audit.operation({ userId: current.id, username: current.username, ...meta, action: 'mark_false_positive', resource: 'finding', resourceId: String(id), status: 'failed', reason: 'not-found' });
       return c.json({ error: '发现记录不存在' }, 404);
     }
-    audit.operation({ userId: current.id, username: current.username, ...meta, action: 'mark_false_positive', resource: 'finding', resourceId: String(id), detail: JSON.stringify({ isFalsePositive }), status: 'success' });
+    audit.operation({
+      userId: current.id,
+      username: current.username,
+      ...meta,
+      action: 'mark_false_positive',
+      resource: 'finding',
+      resourceId: String(id),
+      detail: JSON.stringify({
+        ...(body.isFalsePositive === undefined ? {} : { isFalsePositive: body.isFalsePositive }),
+        ...(body.status === undefined ? {} : { status: body.status }),
+        ...(body.reason === undefined ? {} : { reason: body.reason }),
+      }),
+      status: 'success',
+    });
     return c.json({ updated: true });
   });
+
+  app.get('/api/findings/:id/comments', (c) => {
+    const id = Number(c.req.param('id'));
+    if (!Number.isInteger(id) || id <= 0) return c.json({ error: '发现 ID 无效' }, 400);
+    const current = c.get('user');
+    const owner = deps.store.getFindingReviewOwner(id);
+    if (owner !== current.id && current.role !== 'admin') {
+      return c.json({ error: '发现记录不存在' }, 404);
+    }
+    return c.json(
+      FindingCommentListResponseSchema.parse({ comments: deps.store.listFindingComments(id) }),
+    );
+  });
+
+  app.post(
+    '/api/findings/:id/comments',
+    zValidator('json', FindingCommentCreateSchema),
+    (c) => {
+      const id = Number(c.req.param('id'));
+      if (!Number.isInteger(id) || id <= 0) return c.json({ error: '发现 ID 无效' }, 400);
+      const current = c.get('user');
+      const owner = deps.store.getFindingReviewOwner(id);
+      if (owner !== current.id && current.role !== 'admin') {
+        return c.json({ error: '发现记录不存在' }, 404);
+      }
+      const comment = deps.store.addFindingComment({
+        findingId: id,
+        userId: current.id,
+        username: current.username,
+        body: c.req.valid('json').body,
+      });
+      audit.operation({
+        userId: current.id,
+        username: current.username,
+        ...requestMeta(c),
+        action: 'update',
+        resource: 'finding',
+        resourceId: String(id),
+        detail: JSON.stringify({ commentId: comment.id }),
+        status: 'success',
+      });
+      return c.json(comment, 201);
+    },
+  );
 
   app.get('/api/reviews/:id/events', (c) => {
     const current = c.get('user');
@@ -591,6 +875,15 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
 
     const queue = new EventQueue<ReviewStageEvent>();
     const unsubscribe = deps.service.subscribe(reviewId, (event) => queue.push(event));
+    // 晚连接回放：把已落库的节点检查点按顺序补发，避免客户端只看到“subscribed”
+    for (const stage of deps.store.listReviewStages(reviewId)) {
+      queue.push({
+        type: 'stage',
+        reviewId,
+        stage: stage.node,
+        ...(stage.detail === undefined ? {} : { detail: stage.detail }),
+      });
+    }
     // 订阅后再次检查，覆盖“任务刚完成、实时事件已广播但客户端尚未连接”的竞态窗口。
     const terminal = deps.service.getTerminalEvent(reviewId);
     if (terminal !== undefined) queue.push(terminal);
@@ -754,10 +1047,18 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   );
 
   app.get('/api/admin/knowledge', requirePermission('/admin/knowledge'), async (c) => {
+    const repoPath = c.req.query('repoPath');
+    if (repoPath !== undefined && repoPath !== '') {
+      try {
+        assertRepoPathAllowed(repoPath, deps.allowedRoots ?? [process.cwd()]);
+      } catch {
+        return c.json({ error: '仓库路径不在允许的目录白名单内' }, 400);
+      }
+    }
     const status =
       deps.knowledge === undefined
         ? defaultKnowledgeStatus(deps.configPath ?? '.ai-review.yml')
-        : await deps.knowledge.getStatus();
+        : await deps.knowledge.getStatus(repoPath);
     return c.json(KnowledgeStatusResponseSchema.parse({ knowledge: status }));
   });
 
@@ -766,8 +1067,17 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
       audit.operation({ ...actor(c), ...requestMeta(c), action: 'reindex_knowledge', resource: 'knowledge', status: 'failed', reason: 'not-configured' });
       return c.json({ error: '知识库服务未配置' }, 503);
     }
-    void deps.knowledge.reindex().catch(() => undefined);
-    audit.operation({ ...actor(c), ...requestMeta(c), action: 'reindex_knowledge', resource: 'knowledge', status: 'success' });
+    const repoPath = c.req.query('repoPath');
+    if (repoPath !== undefined && repoPath !== '') {
+      try {
+        assertRepoPathAllowed(repoPath, deps.allowedRoots ?? [process.cwd()]);
+      } catch {
+        audit.operation({ ...actor(c), ...requestMeta(c), action: 'reindex_knowledge', resource: 'knowledge', status: 'failed', reason: 'path-not-allowed' });
+        return c.json({ error: '仓库路径不在允许的目录白名单内' }, 400);
+      }
+    }
+    void deps.knowledge.reindex(repoPath).catch(() => undefined);
+    audit.operation({ ...actor(c), ...requestMeta(c), action: 'reindex_knowledge', resource: 'knowledge', ...(repoPath === undefined ? {} : { detail: JSON.stringify({ repoPath }) }), status: 'success' });
     return c.json(KnowledgeReindexResponseSchema.parse({ accepted: true }), 202);
   });
 
@@ -980,6 +1290,19 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
     zValidator('query', OperationLogQuerySchema),
     (c) =>
       c.json(OperationLogListResponseSchema.parse(audit.listOperationLogs(c.req.valid('query')))),
+  );
+
+  // —— 模型调用审计（可观测页数据源；只读，不触发任何模型请求）——
+  app.get(
+    '/api/admin/llm-calls',
+    requirePermission('/admin'),
+    zValidator('query', LlmCallListQuerySchema),
+    (c) =>
+      c.json(
+        LlmCallListResponseSchema.parse({
+          calls: deps.store.listRecentLlmCalls(c.req.valid('query').limit),
+        }),
+      ),
   );
 
   app.get('/api/admin/overview', requirePermission('/admin'), (c) => {

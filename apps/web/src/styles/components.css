@@ -582,6 +582,23 @@
 .diff-flag-dot.severity-praise {
   background: var(--severity-praise);
 }
+.diff-flag {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  cursor: pointer;
+}
+.diff-flag:hover .diff-flag-dot {
+  transform: translateY(-50%) scale(1.6);
+}
+.diff-finding-popover {
+  max-width: 360px;
+}
+.diff-finding-item + .diff-finding-item {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
 .diff-body.is-wrap .diff-code {
   min-width: 0;
   white-space: pre-wrap;
@@ -597,6 +614,10 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+.finding-card.is-focused {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
 }
 .finding-card {
   --finding-color: var(--brand);

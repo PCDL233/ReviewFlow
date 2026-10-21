@@ -91,10 +91,13 @@ describe('scoreConfidence', () => {
 });
 
 describe('dedupeFindings', () => {
-  it('keeps the later version of an overlapping duplicate', () => {
+  it('keeps the higher-confidence version of an overlapping duplicate', () => {
     const raw = makeFinding({ title: 'unsafe eval', severity: 'BLOCKER', confidence: 0.4 });
     const corrected = makeFinding({ title: 'unsafe eval', severity: 'NIT', confidence: 0.6 });
-    expect(dedupeFindings([raw, corrected])).toEqual([corrected]);
+    const deduped = dedupeFindings([raw, corrected]);
+    expect(deduped).toHaveLength(1);
+    expect(deduped[0]).toMatchObject({ title: 'unsafe eval', severity: 'NIT', confidence: 0.6 });
+    expect(deduped[0]?.fingerprint).toHaveLength(32);
   });
 
   it('keeps disjoint findings with the same title on different lines', () => {
@@ -103,10 +106,13 @@ describe('dedupeFindings', () => {
     expect(dedupeFindings([first, second])).toHaveLength(2);
   });
 
-  it('keeps findings from different agent dimensions', () => {
-    const llm = makeFinding({ title: 'injection', agent: 'security' });
-    const staticFinding = makeFinding({ title: 'injection', agent: 'static' });
-    expect(dedupeFindings([llm, staticFinding])).toHaveLength(2);
+  it('merges the same defect found by different agent dimensions and records all agents', () => {
+    const llm = makeFinding({ title: 'injection', agent: 'security', confidence: 0.7 });
+    const staticFinding = makeFinding({ title: 'injection', agent: 'static', confidence: 0.9 });
+    const deduped = dedupeFindings([llm, staticFinding]);
+    expect(deduped).toHaveLength(1);
+    expect(deduped[0]?.agents?.sort()).toEqual(['security', 'static']);
+    expect(deduped[0]?.confidence).toBe(0.9);
   });
 });
 

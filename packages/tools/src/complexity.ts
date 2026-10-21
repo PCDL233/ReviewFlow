@@ -1,5 +1,6 @@
 import { Node, Project, SyntaxKind } from 'ts-morph';
 import type { FileContext, Finding } from '@ai-review/shared';
+import { analyzeForeignComplexity, languageOf } from './complexity-foreign.js';
 
 /** 函数级复杂度指标（方案 3.4 complexity_check 的输出结构） */
 export type FunctionMetrics = {
@@ -83,18 +84,34 @@ const STATIC_CONFIDENCE = 0.9;
  * @returns 复杂度超标发现
  */
 export function complexityFindings(files: readonly FileContext[], threshold = 15): Finding[] {
-  return files.flatMap((file) =>
-    analyzeComplexity(file.stagedContent, threshold).map((metrics): Finding => ({
-      agent: 'static',
-      severity: 'WARNING',
-      confidence: STATIC_CONFIDENCE,
-      filePath: file.diff.path,
-      lineStart: metrics.line,
-      lineEnd: metrics.endLine,
-      title: `Function "${metrics.name}" has cyclomatic complexity ${metrics.complexity}`,
-      description: `Cyclomatic complexity ${metrics.complexity} exceeds the configured threshold ${threshold}. High-complexity functions are hard to test and review.`,
-      suggestion: 'Extract guard clauses and split the function into smaller named helpers.',
-      isFalsePositive: false,
-    })),
-  );
+  return files.flatMap((file) => {
+    const changed = new Set(
+      file.diff.changedLines.flatMap((line) => (line.newLineNo === null ? [] : [line.newLineNo])),
+    );
+    if (changed.size === 0) return [];
+    const language = languageOf(file.diff.path);
+    const metrics =
+      language === undefined
+        ? analyzeComplexity(file.stagedContent, threshold)
+        : analyzeForeignComplexity(file.stagedContent, language, threshold);
+    return metrics
+      .filter((functionMetrics) => {
+        for (let line = functionMetrics.line; line <= functionMetrics.endLine; line += 1) {
+          if (changed.has(line)) return true;
+        }
+        return false;
+      })
+      .map((functionMetrics): Finding => ({
+        agent: 'static',
+        severity: 'WARNING',
+        confidence: STATIC_CONFIDENCE,
+        filePath: file.diff.path,
+        lineStart: functionMetrics.line,
+        lineEnd: functionMetrics.endLine,
+        title: `Function "${functionMetrics.name}" has cyclomatic complexity ${functionMetrics.complexity}`,
+        description: `Cyclomatic complexity ${functionMetrics.complexity} exceeds the configured threshold ${threshold}. High-complexity functions are hard to test and review.`,
+        suggestion: 'Extract guard clauses and split the function into smaller named helpers.',
+        isFalsePositive: false,
+      }));
+  });
 }

@@ -9,6 +9,12 @@ import {
   RerunReviewResponseSchema,
   DeleteReviewResponseSchema,
   CancelReviewResponseSchema,
+  ReviewDecisionResponseSchema,
+  ReviewDecisionHistoryResponseSchema,
+  ReviewTraceResponseSchema,
+  ReviewCompareResponseSchema,
+  FindingCommentListResponseSchema,
+  FindingCommentSchema,
   AdminConfigResponseSchema,
   KnowledgeStatusResponseSchema,
   KnowledgeReindexResponseSchema,
@@ -25,6 +31,8 @@ import {
 import type {
   AdminConfig,
   Finding,
+  FindingComment,
+  FindingStatus,
   HookScript,
   HookToken,
   InstallHookResponse,
@@ -33,10 +41,14 @@ import type {
   RepoCommit,
   RepoStatus,
   Repository,
+  ReviewCompare,
+  ReviewDecision,
+  ReviewDecisionEvent,
   ReviewListItem,
   ReviewReportDetail,
   ReviewSource,
   ReviewStats,
+  ReviewTrace,
   ServerRuntime,
 } from '@ai-review/shared/api';
 import { ApiError, parseResponse } from './parse-response.js';
@@ -84,11 +96,107 @@ export async function fetchReviewDetail(reviewId: string): Promise<ReviewReportD
   );
 }
 
+/** 更新发现处置状态（人工闭环；不改变已生成的报告统计口径） */
+export async function updateFindingStatus(
+  findingId: number,
+  status: FindingStatus,
+): Promise<void> {
+  await parseResponse(
+    FalsePositiveResponseSchema,
+    await fetch(`${API_BASE}/findings/${findingId}`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status }),
+    }),
+  );
+}
+
+/** 提交人工审查决策（通过 / 要求修改 / 仅评论） */
+export async function submitReviewDecision(
+  reviewId: string,
+  decision: ReviewDecision,
+  comment?: string,
+): Promise<void> {
+  await parseResponse(
+    ReviewDecisionResponseSchema,
+    await fetch(`${API_BASE}/reviews/${encodeURIComponent(reviewId)}/decision`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ decision, ...(comment === undefined ? {} : { comment }) }),
+    }),
+  );
+}
+
+/** 读取审查决策历史 */
+export async function fetchReviewDecisions(reviewId: string): Promise<ReviewDecisionEvent[]> {
+  const body = await parseResponse(
+    ReviewDecisionHistoryResponseSchema,
+    await fetch(`${API_BASE}/reviews/${encodeURIComponent(reviewId)}/decisions`),
+  );
+  return body.decisions;
+}
+
+/** 读取审查的模型调用明细 */
+export async function fetchReviewTrace(reviewId: string): Promise<ReviewTrace> {
+  const body = await parseResponse(
+    ReviewTraceResponseSchema,
+    await fetch(`${API_BASE}/reviews/${encodeURIComponent(reviewId)}/trace`),
+  );
+  return body.trace;
+}
+
+/** 与历史审查对比（按发现指纹：新增/已修复/仍存在） */
+export async function fetchReviewCompare(
+  reviewId: string,
+  baseId: string,
+): Promise<ReviewCompare> {
+  const body = await parseResponse(
+    ReviewCompareResponseSchema,
+    await fetch(
+      `${API_BASE}/reviews/${encodeURIComponent(reviewId)}/compare?baseId=${encodeURIComponent(baseId)}`,
+    ),
+  );
+  return body.compare;
+}
+
+/** 读取某条发现的评论 */
+export async function fetchFindingComments(findingId: number): Promise<FindingComment[]> {
+  const body = await parseResponse(
+    FindingCommentListResponseSchema,
+    await fetch(`${API_BASE}/findings/${findingId}/comments`),
+  );
+  return body.comments;
+}
+
+/** 新增发现评论 */
+export async function addFindingComment(
+  findingId: number,
+  commentBody: string,
+): Promise<FindingComment> {
+  return parseResponse(
+    FindingCommentSchema,
+    await fetch(`${API_BASE}/findings/${findingId}/comments`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ body: commentBody }),
+    }),
+  );
+}
+
+export type StartReviewOverrides = {
+  dimensions?: string[];
+  maxFiles?: number;
+  maxChangedLines?: number;
+  toolCalling?: boolean;
+  includePraise?: boolean;
+};
+
 export async function startReview(
   repoPath: string,
   mode?: 'fast' | 'full',
   blockOn?: 'BLOCKER' | 'WARNING' | 'NIT',
   source?: ReviewSource,
+  overrides: StartReviewOverrides = {},
 ): Promise<string> {
   // 判空 + 展开：exactOptionalPropertyTypes 下不能显式传 undefined
   const payload = {
@@ -98,6 +206,13 @@ export async function startReview(
     ...(source === undefined ? {} : { target: source.target }),
     ...(source !== undefined && source.target === 'commit' ? { commit: source.commit } : {}),
     ...(source !== undefined && source.target === 'range' ? { base: source.base } : {}),
+    ...(overrides.dimensions === undefined ? {} : { dimensions: overrides.dimensions }),
+    ...(overrides.maxFiles === undefined ? {} : { maxFiles: overrides.maxFiles }),
+    ...(overrides.maxChangedLines === undefined
+      ? {}
+      : { maxChangedLines: overrides.maxChangedLines }),
+    ...(overrides.toolCalling === undefined ? {} : { toolCalling: overrides.toolCalling }),
+    ...(overrides.includePraise === undefined ? {} : { includePraise: overrides.includePraise }),
   };
   const response = await fetch(`${API_BASE}/reviews`, {
     method: 'POST',

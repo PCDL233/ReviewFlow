@@ -1,7 +1,7 @@
-import { getMaxRiskScore, runReviewPipeline } from '@ai-review/core';
+import { REVIEW_PROMPT_VERSION, getMaxRiskScore, runReviewPipeline } from '@ai-review/core';
 import type { PipelineDeps, PipelineNodeName, ReviewState } from '@ai-review/core';
 import type { ReviewStore } from '@ai-review/db';
-import { describeReviewSource, severityMeetsThreshold } from '@ai-review/shared';
+import { computeReviewScore, describeLlmStatus, describeReviewSource, severityMeetsThreshold } from '@ai-review/shared';
 import type { ReviewReport, ReviewSource, ReviewStageEvent } from '@ai-review/shared';
 import { deriveQualityNotes, deriveSuggestions } from '@ai-review/report';
 import type { ReviewMetrics } from './metrics.js';
@@ -13,6 +13,7 @@ export type { ReviewStageEvent } from '@ai-review/shared';
 const PIPELINE_NODE_NAMES: readonly PipelineNodeName[] = [
   'parse',
   'riskPlan',
+  'buildContext',
   'correctness',
   'security',
   'performance',
@@ -26,6 +27,14 @@ function isPipelineNodeName(node: string): node is PipelineNodeName {
   return PIPELINE_NODE_NAMES.some((name) => name === node);
 }
 
+/** 单次审查对默认配置的覆盖（Web 运行页高级选项） */
+export type ReviewOverrides = {
+  dimensions?: readonly string[];
+  maxFiles?: number;
+  maxChangedLines?: number;
+  toolCalling?: boolean;
+};
+
 export type StartReviewOptions = {
   repoPath: string;
   mode: 'fast' | 'full';
@@ -37,6 +46,14 @@ export type StartReviewOptions = {
   createdBy?: string;
   /** 是否保留 PRAISE 级发现（report.includePraise）；缺省保留 */
   includePraise?: boolean;
+  /** 本次启用的维度（缺省用配置） */
+  dimensions?: readonly string[];
+  /** 本次文件数上限（缺省用配置） */
+  maxFiles?: number;
+  /** 本次变更行数上限（缺省用配置） */
+  maxChangedLines?: number;
+  /** 本次是否允许只读工具（缺省用配置） */
+  toolCalling?: boolean;
 };
 
 /** 组装流水线依赖；Provider 链由配置选择云端、本地 Ollama 与 mock 保底。 */
@@ -44,14 +61,31 @@ export type PipelineDepsFactory = (
   repoPath: string,
   mode: 'fast' | 'full',
   source: ReviewSource,
+  overrides?: ReviewOverrides,
 ) => PipelineDeps;
 
-/** 允许测试注入假流水线；生产即 @ai-review/core 的 runReviewPipeline */
+/** 仅对网络/限流/超时类错误重试一次；确定性错误（解析失败、schema 错误）不重试 */
+/** 仅对网络/限流/超时类错误重试一次；确定性错误（解析失败、schema 错误）不重试 */
+function isRetryablePipelineError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error.name === 'AbortError') return false;
+  return /timeout|timed out|ECONNRESET|ENOTFOUND|EAI_AGAIN|fetch failed|rate limit|429|502|503|504|unavailable/i.test(
+    `${error.name} ${error.message}`,
+  );
+}
+function isStartReviewOptions(value: unknown): value is StartReviewOptions {
+  if (typeof value !== 'object' || value === null) return false;
+  if (!('repoPath' in value) || typeof value.repoPath !== 'string') return false;
+  if (!('mode' in value) || (value.mode !== 'fast' && value.mode !== 'full')) return false;
+  return true;
+}
+
 export type PipelineRunner = typeof runReviewPipeline;
 
 /**
  * 后台审查调度：触发流水线 → 节点级事件广播（SSE）→ 报告落库。
- * 事件为同步广播 + 内存分发，进程重启后不回放（checkpoint 持久化属团队版后续任务）。
+ * 同一进程内的网络/超时错误会用同一 checkpointer/thread_id 重试一次（断点续跑）；
+ * 进程重启后的恢复仍依赖 review_stages/llm_calls 回溯，不会自动重放。
  */
 export class ReviewService {
   private jobSeq = 0;
@@ -92,8 +126,44 @@ export class ReviewService {
     const controller = new AbortController();
     this.controllers.set(reviewId, controller);
     this.jobs.set(reviewId, options);
+    try {
+      this.store.saveReviewJob(reviewId, options);
+    } catch (error) {
+      // 任务表写入失败不应阻止审查（恢复能力降级，但本次仍可执行）
+      console.error(`[ai-review] failed to persist review job ${reviewId}:`, error);
+    }
     void this.runJob(reviewId, options, controller);
     return reviewId;
+  }
+
+  /**
+   * 进程启动时恢复上次中断的任务：用同一 reviewId（LangGraph thread_id）重放，
+   * 持久化 checkpointer 会从最后一个成功节点继续。
+   * @returns 本次尝试恢复的任务数
+   */
+  public resumeInterrupted(): number {
+    let jobs: Array<{ reviewId: string; optionsJson: string }>;
+    try {
+      jobs = this.store.listRunningReviewJobs();
+    } catch (error) {
+      console.error('[ai-review] failed to list interrupted jobs:', error);
+      return 0;
+    }
+    let resumed = 0;
+    for (const job of jobs) {
+      try {
+        const parsed: unknown = JSON.parse(job.optionsJson);
+        if (!isStartReviewOptions(parsed)) continue;
+        const controller = new AbortController();
+        this.controllers.set(job.reviewId, controller);
+        this.jobs.set(job.reviewId, parsed);
+        void this.runJob(job.reviewId, parsed, controller);
+        resumed += 1;
+      } catch (error) {
+        console.error(`[ai-review] failed to resume job ${job.reviewId}:`, error);
+      }
+    }
+    return resumed;
   }
 
   /** 取消审查；任务已进入终态时返回 false。排队中的任务会立即出队并直接落库为 cancelled。 */
@@ -250,6 +320,11 @@ export class ReviewService {
     message: string,
   ): void {
     this.metrics?.recordFailed();
+    try {
+      this.store.setReviewJobStatus(reviewId, status);
+    } catch (error) {
+      console.error(`[ai-review] failed to persist job status for ${reviewId}:`, error);
+    }
     const failureReport: ReviewReport = {
       meta: {
         reviewId,
@@ -277,6 +352,26 @@ export class ReviewService {
     this.emit({ type: status, reviewId, message });
   }
 
+  /**
+   * 执行流水线；网络/超时类错误使用同一 deps（含 checkpointer）与 thread_id 重试一次。
+   * LangGraph 会从最后一个成功的 superstep 继续，避免整次审查从头重跑。
+   */
+  private async runWithResume(
+    deps: PipelineDeps,
+    reviewId: string,
+    signal: AbortSignal,
+    onNodeUpdate: (node: string, update: unknown) => void,
+  ): Promise<ReviewState> {
+    const run = (): Promise<ReviewState> =>
+      this.runner(deps, { reviewId, signal, onNodeUpdate });
+    try {
+      return await run();
+    } catch (error) {
+      if (signal.aborted || !isRetryablePipelineError(error)) throw error;
+      return run();
+    }
+  }
+
   private async runJob(
     reviewId: string,
     options: StartReviewOptions,
@@ -290,25 +385,53 @@ export class ReviewService {
       this.jobs.delete(reviewId);
       return;
     }
+    // 节点检查点的时间基准：首个节点从任务开始计时，后续节点按上一个节点完成时间计时
+    let lastStageAt = Date.now();
+    let lastNode = 'pipeline';
     try {
-      const deps = this.depsFactory(options.repoPath, options.mode, options.source ?? { target: 'staged' });
-      const state = await this.runner(deps, {
-        reviewId,
-        signal: controller.signal,
-        onNodeUpdate: (node, update) => {
-          if (isPipelineNodeName(node)) {
-            const detail =
-              typeof update === 'object' && update !== null
-                ? JSON.stringify(update).slice(0, 240)
-                : undefined;
-            this.emit({
-              type: 'stage',
+      const deps = this.depsFactory(
+        options.repoPath,
+        options.mode,
+        options.source ?? { target: 'staged' },
+        {
+          ...(options.dimensions === undefined ? {} : { dimensions: options.dimensions }),
+          ...(options.maxFiles === undefined ? {} : { maxFiles: options.maxFiles }),
+          ...(options.maxChangedLines === undefined
+            ? {}
+            : { maxChangedLines: options.maxChangedLines }),
+          ...(options.toolCalling === undefined ? {} : { toolCalling: options.toolCalling }),
+        },
+      );
+      const state = await this.runWithResume(deps, reviewId, controller.signal, (node, update) => {
+        if (isPipelineNodeName(node)) {
+          const detail =
+            typeof update === 'object' && update !== null
+              ? JSON.stringify(update).slice(0, 240)
+              : undefined;
+          const now = Date.now();
+          // 节点检查点独立落库：审计写入失败不应中断审查
+          try {
+            this.store.saveReviewStage({
               reviewId,
-              stage: node,
+              node,
+              status: 'completed',
+              startedAt: new Date(lastStageAt).toISOString(),
+              finishedAt: new Date(now).toISOString(),
+              durationMs: now - lastStageAt,
               ...(detail === undefined ? {} : { detail }),
             });
+          } catch {
+            // 忽略检查点写入失败，保留原始审查流程
           }
-        },
+          lastStageAt = now;
+          lastNode = node;
+          this.emit({
+            type: 'stage',
+            reviewId,
+            stage: node,
+            ...(detail === undefined ? {} : { detail }),
+          });
+        }
       });
       if (controller.signal.aborted) {
         throw new DOMException('The review was cancelled', 'AbortError');
@@ -319,6 +442,13 @@ export class ReviewService {
         ...(options.blockOn === undefined ? {} : { blockOn: options.blockOn }),
         ...(options.source === undefined ? {} : { source: options.source }),
       });
+      this.store.setReviewJobStatus(reviewId, 'completed');
+      // 调用明细独立落库：审计失败不应把已生成的报告标记为失败
+      try {
+        this.store.saveLlmCalls(reviewId, state.metrics.llmCalls ?? []);
+      } catch (error) {
+        console.error(`[ai-review] failed to persist llm calls for ${reviewId}:`, error);
+      }
       this.metrics?.recordCompleted(report);
       // 与存储列同口径（含流水线阶段标记的误报），SSE 实时与晚连接重放数值一致
       const blockerCount = report.findings.filter(
@@ -337,6 +467,19 @@ export class ReviewService {
       const cancelled =
         controller.signal.aborted || (e instanceof DOMException && e.name === 'AbortError');
       const message = cancelled ? '审查已取消' : e instanceof Error ? e.message : String(e);
+      try {
+        this.store.saveReviewStage({
+          reviewId,
+          node: lastNode,
+          status: 'failed',
+          startedAt: new Date(lastStageAt).toISOString(),
+          finishedAt: new Date().toISOString(),
+          durationMs: Date.now() - lastStageAt,
+          detail: message.slice(0, 240),
+        });
+      } catch {
+        // 审计写入失败不应覆盖原始失败原因
+      }
       this.finalizeTerminalFailure(reviewId, options, cancelled ? 'cancelled' : 'failed', message);
     } finally {
       this.controllers.delete(reviewId);
@@ -352,57 +495,100 @@ export class ReviewService {
     deps: PipelineDeps,
     state: ReviewState,
   ): Promise<ReviewReport> {
+    const blockOn = options.blockOn ?? 'BLOCKER';
     const blocking = state.findings.some((finding) =>
-      severityMeetsThreshold(finding.severity, options.blockOn ?? 'BLOCKER'),
+      severityMeetsThreshold(finding.severity, blockOn),
     );
     const source: ReviewSource = options.source ?? { target: 'staged' };
     // 报告必须可追溯到具体提交：commit/range 取目标提交，staged/worktree 取 HEAD
     const commitRef =
-      source.target === 'commit' ? source.commit : source.target === 'range' ? (source.head ?? 'HEAD') : 'HEAD';
+      source.target === 'commit'
+        ? source.commit
+        : source.target === 'range'
+          ? (source.head ?? 'HEAD')
+          : 'HEAD';
     const [branch, commitHash, commitMeta] = await Promise.all([
       deps.gitReader.readBranch(),
       deps.gitReader.readHeadCommit(),
       deps.gitReader.readCommitMeta(commitRef),
     ]);
     const suggestions = deriveSuggestions(state.findings);
-    const qualityNotes = deriveQualityNotes(
-      state.context.metadata.totalFiles,
-      state.findings,
-      state.metrics.degradedToStatic,
-    );
     // report.includePraise 决定 PRAISE 是否进入报告与统计（关闭后仅保留问题类发现）
     const findings =
       options.includePraise === false
         ? state.findings.filter((finding) => finding.severity !== 'PRAISE')
         : state.findings;
+    const counts = { BLOCKER: 0, WARNING: 0, NIT: 0 };
+    for (const finding of findings) {
+      if (finding.severity === 'BLOCKER') counts.BLOCKER += 1;
+      else if (finding.severity === 'WARNING') counts.WARNING += 1;
+      else if (finding.severity === 'NIT') counts.NIT += 1;
+    }
+    // 两个分数语义分离：reviewScore 来自发现，changeRiskScore 来自文件风险
+    const reviewScore = computeReviewScore(findings);
+    const changeRiskScore = getMaxRiskScore(state.plan);
     const truncated = state.metrics.truncatedFiles ?? [];
-    const notes =
-      truncated.length === 0
-        ? qualityNotes
-        : [
-            ...qualityNotes,
-            `以下 ${truncated.length} 个文件因超出单次审查规模上限（review.maxFiles / maxChangedLines）未做 LLM 审查，仅执行静态分析：${truncated.join(', ')}`,
-          ];
+    const dimensions = state.metrics.dimensions;
+    const qualityNotes = deriveQualityNotes(state.context.metadata.totalFiles, findings, {
+      degradedToStatic: state.metrics.degradedToStatic,
+      truncatedFiles: truncated,
+      llmStatus: state.metrics.llmStatus,
+      cacheHits: state.metrics.cacheHits,
+      healRounds: state.metrics.healRounds,
+      healIneffective: state.metrics.healIneffective,
+      dimensions,
+      filesReviewed: state.metrics.filesReviewed ?? 0,
+    });
+    const branchName = branch.trim() || 'HEAD';
+    const sourceLabel = describeReviewSource(source);
+    const languageLabel =
+      state.context.metadata.languages.length === 0
+        ? '未知'
+        : state.context.metadata.languages.join('/');
+    const dimensionLabel = dimensions === undefined || dimensions.length === 0
+      ? '未启用'
+      : dimensions.join('、');
+    const summary =
+      `本次审查覆盖 ${state.context.metadata.totalFiles} 个文件（新增 ${state.context.metadata.totalAdditions} 行、删除 ${state.context.metadata.totalDeletions} 行，语言 ${languageLabel}），来源 ${sourceLabel}。` +
+      `执行 ${dimensions?.length ?? 0} 个 LLM 维度（${dimensionLabel}）与静态分析，共发现 ${findings.length} 个问题（BLOCKER ${counts.BLOCKER} / WARNING ${counts.WARNING} / NIT ${counts.NIT}）。` +
+      (truncated.length === 0 && state.metrics.degradedToStatic.length === 0
+        ? ''
+        : ` 其中 ${truncated.length + state.metrics.degradedToStatic.length} 个文件因规模上限或预算限制未做完整 LLM 审查。`);
+    const llmNote =
+      state.metrics.llmStatus === undefined
+        ? ''
+        : ` 模型状态：${describeLlmStatus(state.metrics.llmStatus)}。`;
+    const assessment = blocking
+      ? `存在达到阻断阈值（${blockOn}）的发现：BLOCKER ${counts.BLOCKER} 个、WARNING ${counts.WARNING} 个。修复阻断项前不应合入。${llmNote}`
+      : `未发现达到当前阻断阈值（${blockOn}）的问题。${llmNote}`;
     return {
       meta: {
         reviewId,
         repoPath: options.repoPath,
-        branch: (branch.trim() || 'HEAD') as string,
+        branch: branchName,
         ...(commitHash === null ? {} : { commitHash }),
         ...(commitMeta === null ? {} : { author: commitMeta.author }),
         model: deps.modelName ?? 'mock + 静态分析',
         mode: options.mode,
-        riskScore: getMaxRiskScore(state.plan),
+        riskScore: reviewScore,
+        reviewScore,
+        changeRiskScore,
         durationMs: state.metrics.durationMs,
         tokenUsed: state.metrics.totalTokens,
+        ...(state.metrics.llmStatus === undefined ? {} : { llmStatus: state.metrics.llmStatus }),
+        ...(dimensions === undefined ? {} : { dimensions }),
+        cacheHits: state.metrics.cacheHits,
+        healRounds: state.metrics.healRounds,
+        promptVersion: REVIEW_PROMPT_VERSION,
+        truncatedFiles: truncated,
+        sourceLabel,
+        blockOn,
       },
-      summary: `本次审查覆盖 ${state.context.metadata.totalFiles} 个文件（${describeReviewSource(source)}），发现 ${findings.length} 个问题。`,
+      summary,
       findings,
-      qualityNotes: notes,
+      qualityNotes,
       suggestions,
-      assessment: blocking
-        ? '存在达到阻断阈值的发现。Changes should not be committed until blocking findings are addressed.'
-        : '未发现达到当前阻断阈值的问题。No findings reached the configured blocking threshold.',
+      assessment,
       degradedToStatic: state.metrics.degradedToStatic,
     };
   }

@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react';
 import {
+  ApiOutlined,
   AppstoreOutlined,
   AuditOutlined,
   BookOutlined,
@@ -80,6 +81,7 @@ const ADMIN_MENU: AdminMenuEntry[] = [
     children: [
       { key: '/admin/login-logs', label: '登录日志', icon: <FileSearchOutlined /> },
       { key: '/admin/operation-logs', label: '操作日志', icon: <AuditOutlined /> },
+      { key: '/admin/observability', label: '模型调用审计', icon: <ApiOutlined /> },
     ],
   },
   { key: '/admin/metrics', label: '系统指标', icon: <FileTextOutlined /> },

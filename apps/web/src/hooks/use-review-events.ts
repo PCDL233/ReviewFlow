@@ -8,7 +8,8 @@ export const STAGE_GROUPS: ReadonlyArray<{
   stages: readonly string[];
 }> = [
   { key: 'parse', label: '解析 diff', stages: ['parse'] },
-  { key: 'plan', label: '风险规划', stages: ['riskPlan'] },
+  // 规模上限前置后新增 buildContext 节点；归入“风险规划”步骤，保持 5 步进度条不变
+  { key: 'plan', label: '风险规划', stages: ['riskPlan', 'buildContext'] },
   {
     key: 'review',
     label: '并行审查',

@@ -8,7 +8,10 @@ export type GitRunner = (...args: string[]) => Promise<string>;
 export type RagQuery = {
   query: string;
   topK?: number;
+  /** 可选路径过滤（与 RagHit.path 等值匹配） */
   filter?: { path?: string };
+  /** 仓库根：服务端按仓库隔离索引，缺省使用服务进程工作目录 */
+  repoPath?: string;
 };
 
 export type RagHit = {

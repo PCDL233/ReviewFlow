@@ -32,6 +32,9 @@ function getLanguage(path: string): string | null {
   return LANGUAGE_BY_EXTENSION[extension] ?? null;
 }
 
+/** 单文件行窗口上限：防止超大文件因窗口计算失控而挤占其余文件与 token 预算 */
+const MAX_LINE_WINDOW = 400;
+
 function getLineWindow(
   content: string,
   changedLines: FileDiff['changedLines'],
@@ -41,8 +44,13 @@ function getLineWindow(
   const lineNumbers = changedLines
     .map((line) => line.newLineNo)
     .filter((line): line is number => line !== null);
-  const start = Math.max(1, Math.min(...lineNumbers, 1) - radius);
-  const end = Math.min(lines.length, Math.max(...lineNumbers, 1) + radius);
+  // 历史缺陷：Math.min(...lineNumbers, 1) 恒为 1，窗口总是从文件头开始。
+  // 正确语义是“首个变更行 − radius”到“最后一个变更行 + radius”，并限制最大行数。
+  if (lineNumbers.length === 0) return '';
+  const first = Math.min(...lineNumbers);
+  const last = Math.max(...lineNumbers);
+  const start = Math.max(1, first - radius);
+  const end = Math.min(lines.length, Math.min(last + radius, start - 1 + MAX_LINE_WINDOW));
   return lines.slice(start - 1, end).join('\n');
 }
 
@@ -143,22 +151,89 @@ export class DiffContextBuilder {
     private readonly source: ReviewSource = { target: 'staged' },
     /** RAG 召回数量；由 .ai-review.yml 的 rag.topK 注入 */
     private readonly ragTopK = 5,
+    /** 仓库根：RAG 按仓库隔离索引 */
+    private readonly repoPath: string | undefined = undefined,
   ) {}
 
   /**
-   * 读取、过滤并并行构建文件级上下文。
-   * 同时返回原始 diff，使流水线无需重复执行一次 `git diff`。
+   * 只读取并解析 diff，不构建文件内容/AST/RAG 上下文（规模上限前置的第一步）。
+   * 返回的 FileContext 带 diff 与变更类型，足以支撑风险规划；`stagedContent` 为空串。
+   * @returns 浅上下文与原始 unified diff
+   */
+  public async readShallow(): Promise<{ context: CodeContext; rawDiff: string }> {
+    const rawDiff = await this.gitReader.readDiff(this.source);
+    const diffs = filterMeaningfulDiffs(parseUnifiedDiff(rawDiff), this.ignores);
+    const files = diffs.map((diff) => this.shallowFileContext(diff));
+    return { context: { files, metadata: buildMetadata(files) }, rawDiff };
+  }
+
+  /**
+   * 为已入选的文件构建内容上下文。
+   * `fullPaths` 内的文件构建 AST + RAG 上下文；其余文件只读取内容与行窗口
+   * （静态工具仍可工作，但省去最贵的 AST 解析与向量检索）。
+   * @param diffs 已通过规模上限的文件 diff
+   * @param options.fullPaths 需要完整 LLM 上下文的文件；缺省表示全部完整
+   * @param options.metadata 保留 parse 阶段基于“全部变更文件”计算的元信息
+   * @returns 文件级上下文
+   */
+  public async buildContexts(
+    diffs: readonly FileDiff[],
+    options: {
+      fullPaths?: ReadonlySet<string>;
+      metadata: CodeContext['metadata'];
+    },
+  ): Promise<CodeContext> {
+    const fullPaths = options.fullPaths;
+    const files = await pMap(
+      diffs,
+      (diff) =>
+        this.buildFileContext(
+          diff,
+          fullPaths === undefined || fullPaths.has(diff.path),
+        ),
+      { concurrency: 8 },
+    );
+    return { files, metadata: { ...options.metadata, totalFiles: diffs.length } };
+  }
+
+  /**
+   * 读取、过滤并并行构建全部文件的完整上下文（保留给测试与既有调用方）。
+   * 生产流水线使用 readShallow + buildContexts，以便先做规模上限再付上下文的成本。
    * @returns 审查上下文包与原始 unified diff
    */
   public async build(): Promise<{ context: CodeContext; rawDiff: string }> {
-    const rawDiff = await this.gitReader.readDiff(this.source);
-    const diffs = filterMeaningfulDiffs(parseUnifiedDiff(rawDiff), this.ignores);
-    const contexts = await pMap(diffs, (diff) => this.buildFileContext(diff), { concurrency: 8 });
-    return { context: { files: contexts, metadata: buildMetadata(contexts) }, rawDiff };
+    const shallow = await this.readShallow();
+    const context = await this.buildContexts(
+      shallow.context.files.map((file) => file.diff),
+      { metadata: shallow.context.metadata },
+    );
+    return { context, rawDiff: shallow.rawDiff };
   }
 
-  private async buildFileContext(diff: FileDiff): Promise<FileContext> {
+  /** 浅上下文：只带 diff 与变更类型，不读文件内容 */
+  private shallowFileContext(diff: FileDiff): FileContext {
+    return {
+      diff,
+      stagedContent: '',
+      snippet: '',
+      signature: null,
+      ragHits: [],
+      changeType: classifyChange(diff),
+    };
+  }
+
+  private async buildFileContext(diff: FileDiff, full: boolean): Promise<FileContext> {
     const newSideContent = await this.gitReader.readFileAt(diff.path, this.source);
+    if (!full) {
+      return {
+        diff,
+        stagedContent: newSideContent,
+        snippet: getLineWindow(newSideContent, diff.changedLines, this.contextRadius),
+        signature: null,
+        ragHits: [],
+        changeType: classifyChange(diff),
+      };
+    }
     const language = getLanguage(diff.path);
     const astContext =
       language === 'typescript' || language === 'javascript'
@@ -168,10 +243,21 @@ export class DiffContextBuilder {
           : { snippet: '', signature: null };
     const snippet =
       astContext.snippet || getLineWindow(newSideContent, diff.changedLines, this.contextRadius);
+    // 跨文件检索：不能再按当前文件路径过滤——那会把“同文件相似函数”之外的项目约定/相似实现
+    // 全部排除，导致 RAG 实际恒为空（历史缺陷）。查询词由路径、摘要与变更标识符组成。
+    const queryText = [
+      diff.path,
+      diff.summary,
+      ...diff.changedLines
+        .filter((line) => line.type === 'added')
+        .map((line) => line.content.trim())
+        .filter((line) => line.length > 0)
+        .slice(0, 12),
+    ].join('\n');
     const ragHits = await this.rag.query({
-      query: diff.summary,
+      query: queryText,
       topK: this.ragTopK,
-      filter: { path: diff.path },
+      ...(this.repoPath === undefined ? {} : { repoPath: this.repoPath }),
     });
     return {
       diff,

@@ -1,17 +1,30 @@
 llm:
   provider: anthropic
+  # 传输运行时：ai-sdk（默认，SDK 负责重试/usage/工具调用）或 http（手写兼容回退）
+  runtime: ai-sdk
   model: claude-sonnet-5
   apiKey: ${AI_REVIEW_API_KEY}
   maxTokensPerReview: 50000
   temperature: 0.1
   mockFixturesDir: .ai-review-cache/llm-fixtures
+  # 单次请求超时与可重试次数；模型全部不可用时的语义（degrade 会明确标注，不再静默冒充）
+  timeoutMs: 60000
+  retries: 1
+  onUnavailable: degrade
+  # 结构化输出（需模型支持 JSON schema；开启后与 ReAct 工具互斥）
+  structuredOutput: false
 review:
   mode: fast
+  # 允许模型调用 read_file/list_symbols/search_repo 读取仓库上下文（需要模型支持 tool calling）
+  toolCalling: true
+  # 单次工具执行超时；超时按工具错误返回给模型，不阻塞整次审查
+  toolTimeoutMs: 10000
+  # 本次审查所有工具输出的累计字符预算，耗尽后工具返回“预算已用完”
+  toolCharBudget: 120000
   dimensions:
     - correctness
     - security
     - performance
-    - maintainability
   blockOn: BLOCKER
   ignorePatterns:
     - "*.lock"
@@ -20,10 +33,15 @@ review:
     - "*.min.js"
 rag:
   enabled: true
+  # 索引整个仓库（依赖/产物目录由索引器跳过）；只索引 docs/ 会让跨文件召回恒为空
   knowledgeBasePaths:
-    - docs/
+    - .
   indexDir: .ai-review-cache/vectors
   topK: 5
+  embedding:
+    model: nomic-embed-text
+    # baseUrl: http://127.0.0.1:11434/v1
+    # apiKey: ollama
 staticAnalysis:
   enabledTools:
     - ast_parse

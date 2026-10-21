@@ -117,7 +117,11 @@ describe('analyzeComplexity', () => {
 describe('complexityFindings', () => {
   it('maps metrics to static findings on the function range', () => {
     const context = makeContext([
-      makeFileContext({ path: 'src/tangled.ts', stagedContent: COMPLEX_SOURCE }),
+      makeFileContext({
+        path: 'src/tangled.ts',
+        stagedContent: COMPLEX_SOURCE,
+        addedLines: [{ content: '  if (i % 2 === 0) {', line: 2 }],
+      }),
     ]);
     const findings = complexityFindings(context.files, 15);
     expect(findings).toHaveLength(1);
@@ -129,8 +133,60 @@ describe('complexityFindings', () => {
     expect(findings[0]?.confidence).toBeGreaterThan(0.8);
   });
 
+  it('ignores pre-existing complexity outside the changed lines', () => {
+    const context = makeContext([
+      makeFileContext({
+        path: 'src/legacy.ts',
+        stagedContent: COMPLEX_SOURCE,
+        addedLines: [{ content: 'const untouched = 1;', line: 200 }],
+      }),
+    ]);
+    expect(complexityFindings(context.files, 15)).toEqual([]);
+  });
+
   it('skips deleted files with empty staged content', () => {
     const context = makeContext([makeFileContext({ path: 'src/deleted.ts', stagedContent: '' })]);
     expect(complexityFindings(context.files, 1)).toEqual([]);
+  });
+
+  it('detects high-complexity Python/Go/Java functions (approximate)', () => {
+    const branches = Array.from({ length: 15 }, (_value, index) => index);
+    const python = [
+      'def risky(x):',
+      ...branches.map((index) => `    if x > ${index}: return ${index}`),
+      '    return 0',
+    ].join('\n');
+    const go = [
+      'func risky(x int) int {',
+      ...branches.map((index) => `  if x > ${index} { return ${index} }`),
+      '  return 0',
+      '}',
+    ].join('\n');
+    const java = [
+      'class A {',
+      '  int risky(int x) {',
+      ...branches.map((index) => `    if (x > ${index}) { return ${index}; }`),
+      '    return 0;',
+      '  }',
+      '}',
+    ].join('\n');
+    const allLines = (source: string): { content: string; line: number }[] =>
+      source.split('\n').map((content, index) => ({ content, line: index + 1 }));
+    const findings = complexityFindings(
+      [
+        makeFileContext({ path: 'src/risky.py', stagedContent: python, addedLines: allLines(python) }),
+        makeFileContext({ path: 'src/risky.go', stagedContent: go, addedLines: allLines(go) }),
+        makeFileContext({ path: 'src/Risky.java', stagedContent: java, addedLines: allLines(java) }),
+      ],
+      15,
+    );
+    expect(findings.map((finding) => finding.filePath).sort()).toEqual([
+      'src/Risky.java',
+      'src/risky.go',
+      'src/risky.py',
+    ]);
+    for (const finding of findings) {
+      expect(finding.title).toContain('cyclomatic complexity 16');
+    }
   });
 });

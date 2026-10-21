@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterAll, describe, expect, it } from 'vitest';
-import type { Finding, ReviewReport } from '@ai-review/shared';
-import { createReviewStore, ReviewStore, StoreError } from '../src/store.js';
+import type { Finding, LlmCallRecord, ReviewReport } from '@ai-review/shared';
+import { createReviewStore, openSqlite, ReviewStore, StoreError } from '../src/store.js';
 
 let tempDir: string | undefined;
 
@@ -204,6 +204,247 @@ describe('ReviewStore', () => {
         "UPDATE reviews SET report_json = '{broken' WHERE id = 'review-corrupt'",
       );
       expect(() => store.getReportDetail('review-corrupt')).toThrow(StoreError);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('applies schema migrations idempotently and adds lifecycle columns', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ai-review-migrate-'));
+    const sqlite = openSqlite(join(dir, 'migrations.db'));
+    try {
+      new ReviewStore(sqlite);
+      const columns = (table: string): string[] =>
+        (sqlite.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
+          (row) => row.name,
+        );
+      expect(columns('findings')).toEqual(
+        expect.arrayContaining(['fingerprint', 'origin', 'line_scope', 'agents', 'status', 'rule_id']),
+      );
+      expect(columns('reviews')).toEqual(
+        expect.arrayContaining([
+          'llm_status',
+          'review_score',
+          'change_risk_score',
+          'cache_hits',
+          'heal_rounds',
+          'dimensions',
+        ]),
+      );
+      const versions = (): number =>
+        (sqlite.prepare('SELECT COUNT(*) AS c FROM schema_migrations').get() as { c: number }).c;
+      const applied = versions();
+      expect(applied).toBeGreaterThan(0);
+      // 再次构造不应重复执行迁移
+      new ReviewStore(sqlite);
+      expect(versions()).toBe(applied);
+    } finally {
+      sqlite.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('round-trips llm status and finding lifecycle fields', () => {
+    const store = new ReviewStore(new Database(':memory:'));
+    try {
+      const fingerprint = 'a'.repeat(32);
+      const report = makeReport('review-meta', [
+        makeFinding({
+          fingerprint,
+          origin: 'static',
+          lineScope: 'changed',
+          ruleId: 'rule-1',
+          agents: ['static', 'security'],
+        }),
+      ]);
+      report.meta.llmStatus = 'degraded';
+      report.meta.reviewScore = 70;
+      report.meta.changeRiskScore = 30;
+      report.meta.dimensions = ['security'];
+      report.meta.cacheHits = 2;
+      report.meta.healRounds = 1;
+      store.saveReport(report);
+
+      const detail = store.getReportDetail('review-meta');
+      expect(detail.meta).toMatchObject({
+        reviewScore: 70,
+        changeRiskScore: 30,
+        llmStatus: 'degraded',
+        cacheHits: 2,
+        healRounds: 1,
+        dimensions: ['security'],
+      });
+      expect(detail.findings[0]).toMatchObject({
+        fingerprint,
+        origin: 'static',
+        lineScope: 'changed',
+        ruleId: 'rule-1',
+        agents: ['static', 'security'],
+        status: 'open',
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it('persists llm call audit rows and cascades them on delete', () => {
+    const store = new ReviewStore(new Database(':memory:'));
+    try {
+      const call: LlmCallRecord = {
+        dimension: 'security',
+        provider: 'deepseek',
+        model: 'deepseek-chat',
+        status: 'degraded',
+        round: 0,
+        promptTokens: 100,
+        completionTokens: 20,
+        totalTokens: 120,
+        estimated: false,
+        latencyMs: 42,
+        promptChars: 400,
+        fallbackUsed: true,
+        attempts: [
+          {
+            kind: 'primary',
+            provider: 'deepseek',
+            model: 'deepseek-chat',
+            status: 'failed',
+            latencyMs: 10,
+            errorKind: 'timeout',
+            message: 'request timed out',
+          },
+          {
+            kind: 'fallback',
+            provider: 'ollama',
+            model: 'qwen3-coder:30b',
+            status: 'succeeded',
+            latencyMs: 32,
+          },
+        ],
+      };
+      store.saveReport(makeReport('review-calls', []));
+      store.saveLlmCalls('review-calls', [call]);
+
+      const calls = store.getLlmCalls('review-calls');
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toMatchObject({
+        dimension: 'security',
+        provider: 'deepseek',
+        status: 'degraded',
+        totalTokens: 120,
+        fallbackUsed: true,
+      });
+      expect(calls[0]?.attempts).toHaveLength(2);
+      expect(calls[0]?.attempts[0]).toMatchObject({ errorKind: 'timeout' });
+      expect(store.listRecentLlmCalls()[0]).toMatchObject({ reviewId: 'review-calls' });
+
+      store.deleteReview('review-calls');
+      expect(store.getLlmCalls('review-calls')).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('updates finding lifecycle and stores comments/decision', () => {
+    const store = new ReviewStore(new Database(':memory:'));
+    try {
+      store.saveReport(makeReport('review-life', [makeFinding({ fingerprint: 'b'.repeat(32) })]));
+      const [finding] = store.getReportDetail('review-life').findings;
+      if (finding === undefined) throw new Error('expected a finding row');
+
+      expect(store.updateFinding(finding.id, { status: 'fixed' })).toBe(true);
+      expect(store.updateFinding(finding.id, { status: 'false_positive' })).toBe(true);
+      const updated = store.getReportDetail('review-life').findings[0];
+      expect(updated).toMatchObject({ status: 'false_positive', isFalsePositive: true });
+
+      const comment = store.addFindingComment({
+        findingId: finding.id,
+        userId: 'user-1',
+        username: 'alice',
+        body: '确认是误报',
+      });
+      expect(comment.id).toBeGreaterThan(0);
+      expect(store.listFindingComments(finding.id)).toHaveLength(1);
+      expect(store.listFindingComments(finding.id)[0]).toMatchObject({ username: 'alice' });
+
+      expect(store.setReviewDecision('review-life', 'approve', 'LGTM', 'user-1')).toBe(true);
+      expect(store.getReportDetail('review-life').meta).toMatchObject({
+        decision: 'approve',
+        decisionComment: 'LGTM',
+        decidedBy: 'user-1',
+      });
+      expect(store.setReviewDecision('review-life', 'request_changes', 'fix it', 'user-1')).toBe(
+        true,
+      );
+      expect(store.listReviewDecisionEvents('review-life')).toHaveLength(2);
+      expect(store.listReviewDecisionEvents('review-life')[1]).toMatchObject({
+        decision: 'request_changes',
+        comment: 'fix it',
+      });
+
+      store.deleteReview('review-life');
+      expect(store.listFindingComments(finding.id)).toEqual([]);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('persists pipeline stage checkpoints and deletes them with the review', () => {
+    const store = new ReviewStore(new Database(':memory:'));
+    try {
+      store.saveReport(makeReport('review-stages', []));
+      const stage = store.saveReviewStage({
+        reviewId: 'review-stages',
+        node: 'parse',
+        status: 'completed',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        finishedAt: '2026-01-01T00:00:01.000Z',
+        durationMs: 1_000,
+        detail: '{"files":1}',
+      });
+      expect(stage.id).toBeGreaterThan(0);
+      expect(store.listReviewStages('review-stages')).toHaveLength(1);
+      expect(store.listReviewStages('review-stages')[0]).toMatchObject({
+        node: 'parse',
+        status: 'completed',
+        durationMs: 1_000,
+      });
+
+      store.deleteReview('review-stages');
+      expect(store.listReviewStages('review-stages')).toEqual([]);
+
+      store.saveReviewStage({
+        reviewId: 'review-orphan',
+        node: 'parse',
+        status: 'completed',
+        startedAt: '2026-01-01T00:00:00.000Z',
+        finishedAt: '2026-01-01T00:00:01.000Z',
+        durationMs: 1_000,
+      });
+      expect(store.pruneOrphanReviewStages()).toBe(1);
+      expect(store.listReviewStages('review-orphan')).toEqual([]);
+
+      store.saveReport(
+        makeReport('review-rules', [
+          makeFinding({ ruleId: 'no-console', severity: 'BLOCKER' }),
+          makeFinding({ ruleId: 'no-console', severity: 'WARNING' }),
+        ]),
+      );
+      expect(store.getRuleHitStats()).toEqual([
+        {
+          ruleId: 'no-console',
+          count: 2,
+          blocker: 1,
+          warning: 1,
+          nit: 0,
+          falsePositives: 0,
+        },
+      ]);
+
+      store.saveReviewJob('review-resume', { repoPath: 'D:/repo', mode: 'fast' });
+      expect(store.listRunningReviewJobs()).toHaveLength(1);
+      store.setReviewJobStatus('review-resume', 'completed');
+      expect(store.listRunningReviewJobs()).toEqual([]);
     } finally {
       store.close();
     }

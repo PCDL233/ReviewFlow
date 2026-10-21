@@ -1,17 +1,31 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import Database from 'better-sqlite3';
-import { and, count, desc, eq, gte, like, lte, or, sum } from 'drizzle-orm';
+import { and, count, desc, eq, gte, isNotNull, like, lte, or, sql, sum } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import { z } from 'zod';
-import { FindingSchema, describeReviewSource } from '@ai-review/shared';
+import {
+  AGENT_DIMENSIONS,
+  FindingSchema,
+  LLM_RUNTIME_STATUSES,
+  describeReviewSource,
+} from '@ai-review/shared';
 import type {
   AgentCount,
   Finding,
+  FindingComment,
+  FindingStatus,
   IdentifiedFinding,
+  LlmCallAttemptRecord,
+  LlmCallRecord,
   ReviewListItem,
   ReviewListQuery,
+  ReviewDecisionEvent,
+  ReviewMeta,
+  ReviewStage,
+  ReviewStatsQuery,
+  RuleHitStat,
   ReviewReport,
   ReviewReportDetail,
   ReviewSource,
@@ -19,12 +33,114 @@ import type {
   SeverityCount,
   TokenTrendPoint,
 } from '@ai-review/shared';
-import { findings, reviewCache, reviews } from './schema.js';
+import {
+  findingComments,
+  findings,
+  llmCalls,
+  reviewCache,
+  reviewDecisionEvents,
+  reviewStages,
+  reviews,
+} from './schema.js';
+import type {
+  FindingCommentRow,
+  LlmCallRow,
+  ReviewDecisionEventRow,
+  ReviewStageRow,
+} from './schema.js';
+import { runMigrations } from './migrations.js';
 
 // API 契约类型以 shared 为单一事实源，此处转出口供既有调用方使用
 export type { IdentifiedFinding, ReviewListItem, ReviewReportDetail } from '@ai-review/shared';
 export { UserStore } from './user-store.js';
 export type { SafeUser } from './user-store.js';
+
+/**
+ * 报告元信息中不落独立列的扩展字段（M1 阶段以 report_json 承载，
+ * 避免为了展示型字段引入迁移；需要聚合查询时再升级为列）。
+ */
+const StoredMetaExtraSchema = z.object({
+  changeRiskScore: z.number().optional(),
+  reviewScore: z.number().optional(),
+  llmStatus: z.enum(LLM_RUNTIME_STATUSES).optional(),
+  dimensions: z.array(z.string()).optional(),
+  cacheHits: z.number().int().nonnegative().optional(),
+  healRounds: z.number().int().nonnegative().optional(),
+  promptVersion: z.string().optional(),
+  truncatedFiles: z.array(z.string()).optional(),
+  skippedFiles: z.array(z.string()).optional(),
+  sourceLabel: z.string().optional(),
+  trigger: z.enum(['web', 'hook', 'ci', 'api']).optional(),
+  blockOn: z.enum(['BLOCKER', 'WARNING', 'NIT']).optional(),
+});
+type StoredMetaExtra = z.infer<typeof StoredMetaExtraSchema>;
+
+/** 只写入已定义的扩展字段，避免把 undefined 写进 JSON */
+function toStoredMeta(meta: ReviewMeta): StoredMetaExtra {
+  const extra: StoredMetaExtra = {};
+  if (meta.changeRiskScore !== undefined) extra.changeRiskScore = meta.changeRiskScore;
+  if (meta.reviewScore !== undefined) extra.reviewScore = meta.reviewScore;
+  if (meta.llmStatus !== undefined) extra.llmStatus = meta.llmStatus;
+  if (meta.dimensions !== undefined) extra.dimensions = meta.dimensions;
+  if (meta.cacheHits !== undefined) extra.cacheHits = meta.cacheHits;
+  if (meta.healRounds !== undefined) extra.healRounds = meta.healRounds;
+  if (meta.promptVersion !== undefined) extra.promptVersion = meta.promptVersion;
+  if (meta.truncatedFiles !== undefined) extra.truncatedFiles = meta.truncatedFiles;
+  if (meta.skippedFiles !== undefined) extra.skippedFiles = meta.skippedFiles;
+  if (meta.sourceLabel !== undefined) extra.sourceLabel = meta.sourceLabel;
+  if (meta.trigger !== undefined) extra.trigger = meta.trigger;
+  if (meta.blockOn !== undefined) extra.blockOn = meta.blockOn;
+  return extra;
+}
+
+/** llm_calls.attempts_json 的结构校验（损坏时按空数组降级） */
+const StoredAttemptSchema = z.object({
+  kind: z.string(),
+  provider: z.string(),
+  model: z.string(),
+  status: z.enum(['succeeded', 'failed']),
+  latencyMs: z.number(),
+  errorKind: z.string().optional(),
+  message: z.string().optional(),
+});
+
+function parseAttempts(value: string): LlmCallAttemptRecord[] {
+  try {
+    const parsed = z.array(StoredAttemptSchema).safeParse(JSON.parse(value));
+    if (!parsed.success) return [];
+    // exactOptionalPropertyTypes：不能把 undefined 显式赋给可选字段
+    return parsed.data.map((attempt) => ({
+      kind: attempt.kind,
+      provider: attempt.provider,
+      model: attempt.model,
+      status: attempt.status,
+      latencyMs: attempt.latencyMs,
+      ...(attempt.errorKind === undefined ? {} : { errorKind: attempt.errorKind }),
+      ...(attempt.message === undefined ? {} : { message: attempt.message }),
+    }));
+  } catch {
+    return [];
+  }
+}
+
+/** DB 行 → 调用记录（attempts 从 JSON 列还原） */
+function toLlmCallRecord(row: LlmCallRow): LlmCallRecord {
+  return {
+    dimension: row.dimension,
+    provider: row.provider,
+    model: row.model,
+    status: row.status,
+    promptTokens: row.promptTokens,
+    completionTokens: row.completionTokens,
+    totalTokens: row.totalTokens,
+    estimated: row.estimated,
+    latencyMs: row.latencyMs,
+    promptChars: row.promptChars,
+    fallbackUsed: row.fallbackUsed,
+    round: row.round,
+    attempts: parseAttempts(row.attemptsJson),
+  };
+}
 
 /** 报告 JSON 中非规范化段落的结构校验（规范 §5.5：读回的运行时数据必须经 zod 校验） */
 const StoredReportSchema = z.object({
@@ -33,7 +149,30 @@ const StoredReportSchema = z.object({
   suggestions: z.array(z.string()),
   assessment: z.string(),
   degradedToStatic: z.array(z.string()),
+  meta: StoredMetaExtraSchema.optional(),
 });
+
+/** 解析 JSON 数组列（损坏时按缺省处理，避免一条脏数据拖垮整份报告） */
+function parseStringArray(value: string | null): string[] | undefined {
+  if (value === null || value === '') return undefined;
+  try {
+    const parsed = z.array(z.string()).safeParse(JSON.parse(value));
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 解析发现命中的维度列表；非法内容按缺省处理 */
+function parseFindingAgents(value: string | null): Finding['agents'] {
+  if (value === null || value === '') return undefined;
+  try {
+    const parsed = z.array(z.enum(AGENT_DIMENSIONS)).safeParse(JSON.parse(value));
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * 从落库的 target/source_label 还原审查来源。
@@ -134,22 +273,6 @@ export class ReviewStore {
         created_at     TEXT NOT NULL
       );
     `);
-    // 存量库升级：reviews 补 created_by / diff_text / error_message / block_on 列（新建库由上方建表语句直接包含，ALTER 必然重复报错）
-    for (const ddl of [
-      'ALTER TABLE reviews ADD COLUMN created_by TEXT',
-      'ALTER TABLE reviews ADD COLUMN diff_text TEXT',
-      'ALTER TABLE reviews ADD COLUMN error_message TEXT',
-      'ALTER TABLE reviews ADD COLUMN block_on TEXT',
-      'ALTER TABLE reviews ADD COLUMN target TEXT',
-      'ALTER TABLE reviews ADD COLUMN source_label TEXT',
-    ]) {
-      try {
-        sqlite.exec(ddl);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        if (!message.includes('duplicate column name')) throw e;
-      }
-    }
     sqlite.exec(`
       CREATE TABLE IF NOT EXISTS users (
         id            TEXT PRIMARY KEY,
@@ -183,13 +306,8 @@ export class ReviewStore {
         PRIMARY KEY (user_id, role_id)
       );
     `);
-    // 存量库升级：users 补 avatar_url 列（新建库由上方建表语句直接包含，ALTER 必然重复报错）
-    try {
-      sqlite.exec('ALTER TABLE users ADD COLUMN avatar_url TEXT');
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      if (!message.includes('duplicate column name')) throw e;
-    }
+    // 统一迁移：补列、补索引、记录版本（幂等；旧库与新库走同一条路径）
+    runMigrations(sqlite);
     seedRoles(sqlite);
     this.db = drizzle(sqlite);
   }
@@ -239,6 +357,14 @@ export class ReviewStore {
           tokenUsed: report.meta.tokenUsed,
           durationMs: report.meta.durationMs,
           createdBy: createdBy ?? null,
+          changeRiskScore: report.meta.changeRiskScore ?? null,
+          reviewScore: report.meta.reviewScore ?? report.meta.riskScore,
+          llmStatus: report.meta.llmStatus ?? null,
+          promptVersion: report.meta.promptVersion ?? null,
+          cacheHits: report.meta.cacheHits ?? 0,
+          healRounds: report.meta.healRounds ?? 0,
+          dimensions:
+            report.meta.dimensions === undefined ? null : JSON.stringify(report.meta.dimensions),
           diffText:
             options.diffText === undefined
               ? null
@@ -250,6 +376,7 @@ export class ReviewStore {
             suggestions: report.suggestions,
             assessment: report.assessment,
             degradedToStatic: report.degradedToStatic,
+            meta: toStoredMeta(report.meta),
           }),
         })
         .run();
@@ -272,6 +399,13 @@ export class ReviewStore {
               cweId: finding.cweId,
               lowConfidence: finding.lowConfidence ?? false,
               isFalsePositive: finding.isFalsePositive,
+              fingerprint: finding.fingerprint ?? null,
+              origin: finding.origin ?? null,
+              lineScope: finding.lineScope ?? null,
+              agents:
+                finding.agents === undefined ? null : JSON.stringify(finding.agents),
+              status: finding.status ?? 'open',
+              ruleId: finding.ruleId ?? null,
             })),
           )
           .run();
@@ -479,9 +613,21 @@ export class ReviewStore {
     return row.diffText;
   }
 
-  /** 删除审查及其发现，显式级联以兼容存量库没有外键级联的情况。 */
+  /** 删除审查及其发现/调用明细，显式级联以兼容存量库没有外键级联的情况。 */
   public deleteReview(reviewId: string): boolean {
     const transaction = this.sqlite.transaction(() => {
+      this.db.delete(llmCalls).where(eq(llmCalls.reviewId, reviewId)).run();
+      this.db.delete(reviewStages).where(eq(reviewStages.reviewId, reviewId)).run();
+      this.db
+        .delete(reviewDecisionEvents)
+        .where(eq(reviewDecisionEvents.reviewId, reviewId))
+        .run();
+      // 评论通过 finding_id 间接关联审查；先按子查询清理，避免外键约束阻止删除
+      this.sqlite
+        .prepare(
+          'DELETE FROM finding_comments WHERE finding_id IN (SELECT id FROM findings WHERE review_id = ?)',
+        )
+        .run(reviewId);
       this.db.delete(findings).where(eq(findings.reviewId, reviewId)).run();
       const result = this.db.delete(reviews).where(eq(reviews.id, reviewId)).run();
       return result.changes > 0;
@@ -517,16 +663,33 @@ export class ReviewStore {
       .where(eq(findings.reviewId, reviewId))
       .orderBy(findings.id)
       .all();
-    const mapped: IdentifiedFinding[] = findingRows.map((findingRow) => ({
-      // SQLite 列缺省读回 null，而 Finding 契约的 optional 语义是 undefined，先归一化再过 zod
-      ...FindingSchema.parse({
-        ...findingRow,
+    const mapped: IdentifiedFinding[] = findingRows.map((findingRow) => {
+      const agents = parseFindingAgents(findingRow.agents);
+      // SQLite 列缺省读回 null，而 Finding 契约的 optional 语义是 undefined，先归一化再过 zod。
+      // 新列必须显式映射：agents 在库里是 JSON 字符串，直接展开会破坏 schema。
+      const parsed = FindingSchema.parse({
+        agent: findingRow.agent,
+        severity: findingRow.severity,
+        confidence: findingRow.confidence,
+        filePath: findingRow.filePath,
+        lineStart: findingRow.lineStart,
+        lineEnd: findingRow.lineEnd,
+        title: findingRow.title,
+        description: findingRow.description,
         suggestion: findingRow.suggestion ?? undefined,
         codeSnippet: findingRow.codeSnippet ?? undefined,
         cweId: findingRow.cweId ?? undefined,
-      }),
-      id: findingRow.id,
-    }));
+        lowConfidence: findingRow.lowConfidence,
+        isFalsePositive: findingRow.isFalsePositive,
+        ...(findingRow.fingerprint === null ? {} : { fingerprint: findingRow.fingerprint }),
+        ...(findingRow.origin === null ? {} : { origin: findingRow.origin }),
+        ...(findingRow.lineScope === null ? {} : { lineScope: findingRow.lineScope }),
+        ...(findingRow.ruleId === null ? {} : { ruleId: findingRow.ruleId }),
+        ...(findingRow.status === null ? {} : { status: findingRow.status }),
+        ...(agents === undefined ? {} : { agents }),
+      });
+      return { ...parsed, id: findingRow.id };
+    });
 
     return {
       meta: {
@@ -540,8 +703,21 @@ export class ReviewStore {
         status: row.status,
         errorMessage: row.errorMessage ?? undefined,
         riskScore: row.riskScore,
+        reviewScore: row.reviewScore ?? row.riskScore,
+        ...(row.changeRiskScore === null ? {} : { changeRiskScore: row.changeRiskScore }),
+        ...(row.llmStatus === null ? {} : { llmStatus: row.llmStatus }),
+        cacheHits: row.cacheHits,
+        healRounds: row.healRounds,
+        ...(row.dimensions === null ? {} : { dimensions: parseStringArray(row.dimensions) ?? [] }),
+        ...(row.promptVersion === null ? {} : { promptVersion: row.promptVersion }),
+        ...(row.decision === null ? {} : { decision: row.decision }),
+        ...(row.decisionComment === null ? {} : { decisionComment: row.decisionComment }),
+        ...(row.decidedBy === null ? {} : { decidedBy: row.decidedBy }),
+        ...(row.decidedAt === null ? {} : { decidedAt: row.decidedAt }),
         durationMs: row.durationMs,
         tokenUsed: row.tokenUsed,
+        // 扩展字段以 report_json 为准；旧报告没有该段时使用上面的列值/缺省（前端按 optional 处理）
+        ...(stored.data.meta ?? {}),
       },
       summary: stored.data.summary,
       findings: mapped,
@@ -563,6 +739,144 @@ export class ReviewStore {
       .where(eq(findings.id, findingId))
       .run();
     return result.changes > 0;
+  }
+
+  /**
+   * 更新发现的处置状态/误报标记（人工闭环）。
+   * status=false_positive 时同步置 isFalsePositive=true，避免两个字段互相矛盾。
+   * @param findingId 发现行 id
+   * @param patch 状态与/或误报标记
+   * @returns 目标发现是否存在
+   */
+  public updateFinding(
+    findingId: number,
+    patch: { status?: FindingStatus; isFalsePositive?: boolean },
+  ): boolean {
+    const falsePositive =
+      patch.status === 'false_positive'
+        ? true
+        : patch.isFalsePositive;
+    const result = this.db
+      .update(findings)
+      .set({
+        ...(patch.status === undefined ? {} : { status: patch.status }),
+        ...(falsePositive === undefined ? {} : { isFalsePositive: falsePositive }),
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(findings.id, findingId))
+      .run();
+    return result.changes > 0;
+  }
+
+  /**
+   * 新增发现评论。
+   * @returns 落库后的评论行
+   */
+  public addFindingComment(input: {
+    findingId: number;
+    userId: string;
+    username: string;
+    body: string;
+  }): FindingComment {
+    const createdAt = new Date().toISOString();
+    const result = this.db
+      .insert(findingComments)
+      .values({
+        findingId: input.findingId,
+        userId: input.userId,
+        username: input.username,
+        body: input.body,
+        createdAt,
+      })
+      .run();
+    return {
+      id: Number(result.lastInsertRowid),
+      findingId: input.findingId,
+      userId: input.userId,
+      username: input.username,
+      body: input.body,
+      createdAt,
+    };
+  }
+
+  /**
+   * 读取某条发现的评论（按时间升序）。
+   * @param findingId 发现行 id
+   */
+  public listFindingComments(findingId: number): FindingComment[] {
+    return this.db
+      .select()
+      .from(findingComments)
+      .where(eq(findingComments.findingId, findingId))
+      .orderBy(findingComments.id)
+      .all()
+      .map((row: FindingCommentRow) => ({
+        id: row.id,
+        findingId: row.findingId,
+        userId: row.userId,
+        username: row.username,
+        body: row.body,
+        createdAt: row.createdAt,
+      }));
+  }
+
+  /**
+   * 写入人工审查决策（approve / request_changes / comment）。
+   * @returns 审查是否存在
+   */
+  public setReviewDecision(
+    reviewId: string,
+    decision: 'approve' | 'request_changes' | 'comment',
+    comment: string | undefined,
+    decidedBy: string,
+  ): boolean {
+    const createdAt = new Date().toISOString();
+    const transaction = this.sqlite.transaction(() => {
+      const result = this.db
+        .update(reviews)
+        .set({
+          decision,
+          decisionComment: comment ?? null,
+          decidedBy,
+          decidedAt: createdAt,
+        })
+        .where(eq(reviews.id, reviewId))
+        .run();
+      if (result.changes === 0) return false;
+      this.db
+        .insert(reviewDecisionEvents)
+        .values({
+          reviewId,
+          decision,
+          comment: comment ?? null,
+          decidedBy,
+          createdAt,
+        })
+        .run();
+      return true;
+    });
+    return transaction();
+  }
+
+  /**
+   * 读取某次审查的决策历史（append-only，按写入顺序）。
+   * @param reviewId 审查 id
+   */
+  public listReviewDecisionEvents(reviewId: string): ReviewDecisionEvent[] {
+    return this.db
+      .select()
+      .from(reviewDecisionEvents)
+      .where(eq(reviewDecisionEvents.reviewId, reviewId))
+      .orderBy(reviewDecisionEvents.id)
+      .all()
+      .map((row: ReviewDecisionEventRow) => ({
+        id: row.id,
+        reviewId: row.reviewId,
+        decision: row.decision,
+        comment: row.comment,
+        decidedBy: row.decidedBy,
+        createdAt: row.createdAt,
+      }));
   }
 
   /**
@@ -590,6 +904,142 @@ export class ReviewStore {
       .where(eq(findings.id, findingId))
       .get();
     return row?.createdBy ?? null;
+  }
+
+  /**
+   * 保存一次审查的模型调用明细（事务；空数组直接返回）。
+   * @param reviewId 审查 id
+   * @param calls 每个维度/每个自愈轮次一条
+   */
+  public saveLlmCalls(reviewId: string, calls: readonly LlmCallRecord[]): void {
+    if (calls.length === 0) return;
+    this.db.transaction(() => {
+      this.db
+        .insert(llmCalls)
+        .values(
+          calls.map((call) => ({
+            reviewId,
+            dimension: call.dimension,
+            provider: call.provider,
+            model: call.model,
+            status: call.status,
+            round: call.round,
+            promptTokens: call.promptTokens,
+            completionTokens: call.completionTokens,
+            totalTokens: call.totalTokens,
+            estimated: call.estimated,
+            latencyMs: call.latencyMs,
+            promptChars: call.promptChars,
+            fallbackUsed: call.fallbackUsed,
+            attemptsJson: JSON.stringify(call.attempts),
+          })),
+        )
+        .run();
+    });
+  }
+
+  /**
+   * 追加一个流水线节点检查点（节点完成/失败时调用）。
+   * @param stage 节点、状态、起止时间、耗时与摘要
+   * @returns 落库后的记录（含自增 id）
+   */
+  public saveReviewStage(stage: {
+    reviewId: string;
+    node: string;
+    status: 'completed' | 'failed';
+    startedAt: string;
+    finishedAt: string;
+    durationMs: number;
+    detail?: string;
+  }): ReviewStage {
+    const result = this.db
+      .insert(reviewStages)
+      .values({
+        reviewId: stage.reviewId,
+        node: stage.node,
+        status: stage.status,
+        startedAt: stage.startedAt,
+        finishedAt: stage.finishedAt,
+        durationMs: stage.durationMs,
+        detail: stage.detail ?? null,
+      })
+      .run();
+    return {
+      id: Number(result.lastInsertRowid),
+      node: stage.node,
+      status: stage.status,
+      startedAt: stage.startedAt,
+      finishedAt: stage.finishedAt,
+      durationMs: stage.durationMs,
+      ...(stage.detail === undefined ? {} : { detail: stage.detail }),
+    };
+  }
+
+  /**
+   * 读取某次审查的节点检查点（按写入顺序）。
+   * @param reviewId 审查 id
+   */
+  public listReviewStages(reviewId: string): ReviewStage[] {
+    return this.db
+      .select()
+      .from(reviewStages)
+      .where(eq(reviewStages.reviewId, reviewId))
+      .orderBy(reviewStages.id)
+      .all()
+      .map((row: ReviewStageRow) => ({
+        id: row.id,
+        node: row.node,
+        status: row.status,
+        startedAt: row.startedAt,
+        finishedAt: row.finishedAt,
+        durationMs: row.durationMs,
+        ...(row.detail === null ? {} : { detail: row.detail }),
+      }));
+  }
+
+  /**
+   * 清理没有对应 reviews 行的检查点（进程崩溃/手工删库残留）。
+   * 检查点先于 reviews 行写入，故不能依赖外键级联。
+   * @returns 删除行数
+   */
+  public pruneOrphanReviewStages(): number {
+    return this.sqlite
+      .prepare('DELETE FROM review_stages WHERE review_id NOT IN (SELECT id FROM reviews)')
+      .run().changes;
+  }
+
+  /**
+   * 读取某次审查的模型调用明细（按写入顺序）。
+   * @param reviewId 审查 id
+   */
+  public getLlmCalls(reviewId: string): LlmCallRecord[] {
+    return this.db
+      .select()
+      .from(llmCalls)
+      .where(eq(llmCalls.reviewId, reviewId))
+      .orderBy(llmCalls.id)
+      .all()
+      .map(toLlmCallRecord);
+  }
+
+  /**
+   * 最近的模型调用（管理台可观测页数据源）。
+   * @param limit 返回条数上限
+   */
+  public listRecentLlmCalls(
+    limit = 200,
+  ): Array<LlmCallRecord & { reviewId: string; createdAt: string }> {
+    return this.db
+      .select()
+      .from(llmCalls)
+      .orderBy(desc(llmCalls.createdAt), desc(llmCalls.id))
+      .limit(limit)
+      .all()
+      .map((row) => ({
+        ...toLlmCallRecord(row),
+        reviewId: row.reviewId,
+        createdAt: row.createdAt,
+      }));
   }
 
   /**
@@ -653,6 +1103,119 @@ export class ReviewStore {
       .from(reviewCache)
       .get();
     return { entries: Number(row?.entries ?? 0), tokenSaved: Number(row?.tokenSaved ?? 0) };
+  }
+
+  /**
+   * 自定义规则命中统计（按 ruleId 聚合，最多 50 条）。
+   * @param ownerId 数据隔离过滤：普通用户仅统计本人数据（admin 省略）
+   * @param range 时间范围（与 Dashboard 统计一致）
+   */
+  public getRuleHitStats(ownerId?: string, range: ReviewStatsQuery = {}): RuleHitStat[] {
+    const conditions = [isNotNull(findings.ruleId)];
+    if (ownerId !== undefined) conditions.push(eq(reviews.createdBy, ownerId));
+    if (range.from !== undefined) conditions.push(gte(reviews.createdAt, range.from));
+    if (range.to !== undefined) conditions.push(lte(reviews.createdAt, range.to));
+    const rows = this.db
+      .select({
+        ruleId: findings.ruleId,
+        total: sql<number>`count(*)`,
+        blocker: sql<number>`sum(case when ${findings.severity} = 'BLOCKER' then 1 else 0 end)`,
+        warning: sql<number>`sum(case when ${findings.severity} = 'WARNING' then 1 else 0 end)`,
+        nit: sql<number>`sum(case when ${findings.severity} = 'NIT' then 1 else 0 end)`,
+        falsePositives: sql<number>`sum(case when ${findings.isFalsePositive} = 1 then 1 else 0 end)`,
+      })
+      .from(findings)
+      .innerJoin(reviews, eq(findings.reviewId, reviews.id))
+      .where(and(...conditions))
+      .groupBy(findings.ruleId)
+      .orderBy(desc(sql`count(*)`))
+      .limit(50)
+      .all();
+    return rows.flatMap((row) =>
+      row.ruleId === null
+        ? []
+        : [
+            {
+              ruleId: row.ruleId,
+              count: Number(row.total ?? 0),
+              blocker: Number(row.blocker ?? 0),
+              warning: Number(row.warning ?? 0),
+              nit: Number(row.nit ?? 0),
+              falsePositives: Number(row.falsePositives ?? 0),
+            },
+          ],
+    );
+  }
+
+  /**
+   * 记录一次审查任务（供进程重启后恢复未完成任务）。
+   * @param reviewId 审查 id（LangGraph thread_id）
+   * @param options 发起参数（JSON 序列化）
+   */
+  public saveReviewJob(reviewId: string, options: unknown): void {
+    const now = new Date().toISOString();
+    this.sqlite
+      .prepare(
+        `INSERT OR REPLACE INTO review_jobs
+         (review_id, options_json, status, created_at, updated_at)
+         VALUES (?, ?, 'running', ?, ?)`,
+      )
+      .run(reviewId, JSON.stringify(options), now, now);
+  }
+
+  /**
+   * 更新任务终态。
+   * @param reviewId 审查 id
+   * @param status completed / failed / cancelled
+   */
+  public setReviewJobStatus(
+    reviewId: string,
+    status: 'completed' | 'failed' | 'cancelled',
+  ): void {
+    this.sqlite
+      .prepare('UPDATE review_jobs SET status = ?, updated_at = ? WHERE review_id = ?')
+      .run(status, new Date().toISOString(), reviewId);
+  }
+
+  /**
+   * 读取上次进程退出时仍处于 running 的任务（启动恢复用）。
+   */
+  public listRunningReviewJobs(): Array<{ reviewId: string; optionsJson: string }> {
+    const rows = this.sqlite
+      .prepare("SELECT review_id, options_json FROM review_jobs WHERE status = 'running'")
+      .all() as Array<{ review_id: string; options_json: string }>;
+    return rows.map((row) => ({ reviewId: row.review_id, optionsJson: row.options_json }));
+  }
+
+  /**
+   * 清理过期的 LangGraph checkpoint（默认保留 7 天）。
+   * 运行中的任务不清理，避免恢复失败；writes 随 checkpoint 一起删除。
+   * @param beforeIso 早于该时间的 checkpoint 可删除
+   * @returns 删除的 checkpoint 行数
+   */
+  public pruneLanggraphCheckpoints(beforeIso: string): number {
+    const transaction = this.sqlite.transaction(() => {
+      const result = this.sqlite
+        .prepare(
+          `DELETE FROM langgraph_checkpoints
+           WHERE created_at < ?
+             AND thread_id NOT IN (SELECT review_id FROM review_jobs WHERE status = 'running')`,
+        )
+        .run(beforeIso);
+      this.sqlite
+        .prepare(
+          `DELETE FROM langgraph_writes
+           WHERE NOT EXISTS (
+             SELECT 1 FROM langgraph_checkpoints c
+             WHERE c.thread_id = langgraph_writes.thread_id
+               AND c.checkpoint_ns = langgraph_writes.checkpoint_ns
+               AND c.checkpoint_id = langgraph_writes.checkpoint_id
+           )`,
+        )
+        .run();
+      return result.changes;
+    });
+    return transaction();
   }
 
   /**

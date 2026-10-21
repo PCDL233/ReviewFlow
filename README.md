@@ -249,10 +249,11 @@ Hook / CI 响应的稳定退出码（`exitCode` 字段，调用方脚本据此�
 
 索引重建在后台「知识库」页触发，无需命令行：
 
-- 索引按下述配置的路径递归扫描并跳过常见生成目录：`rag.knowledgeBasePaths`。
-- 嵌入模型由 `AI_REVIEW_EMBEDDING_MODEL` 指定（默认本地 Ollama `nomic-embed-text`），端点由 `AI_REVIEW_EMBEDDING_BASE_URL` 指定（默认 `http://127.0.0.1:11434/v1`）。
+- 索引按下述配置的路径递归扫描并跳过常见生成目录：`rag.knowledgeBasePaths`（默认 `.`，即整个仓库；只索引 `docs/` 会让跨文件召回恒为空）。
+- 嵌入模型由 `rag.embedding.model` 指定（默认本地 Ollama `nomic-embed-text`），端点由 `rag.embedding.baseUrl` 或 `AI_REVIEW_EMBEDDING_BASE_URL` 指定（默认 `http://127.0.0.1:11434/v1`）。
 - 索引按块级内容哈希增量更新，重复重建不会重复处理未变化内容；重建期间审查跳过知识库检索。
 - 修改知识库路径后需要重新重建索引，旧索引不会自动迁移。
+- 检索是**跨文件**的：同一文件的相似函数、项目约定文档与相似实现都会进入审查上下文；召回失败/无命中只降级为空上下文，不阻塞审查。
 
 ### 服务端启动参数
 
@@ -306,15 +307,23 @@ Docker 镜像默认 `NODE_ENV=production`，会话 Cookie 自动启用 `Secure`�
 ```yaml
 llm:
   provider: anthropic # anthropic | openai | deepseek | zhipu | moonshot | dashscope | volcengine | minimax | ollama | mock
+  runtime: ai-sdk     # ai-sdk（默认）| http（手写兼容回退）
   model: claude-sonnet-5
   apiKey: ${AI_REVIEW_API_KEY}
   maxTokensPerReview: 50000
   temperature: 0.1
   mockFixturesDir: .ai-review-cache/llm-fixtures
+  timeoutMs: 60000      # 单次模型请求超时
+  retries: 1            # 仅 429/5xx/网络/超时重试
+  onUnavailable: degrade # degrade：退回 mock 但报告标注 unavailable；fail：直接失败
+  structuredOutput: false # 结构化输出（需模型支持 JSON schema；与 ReAct 工具互斥）
 
 review:
   mode: fast # fast | full
-  dimensions: [correctness, security, performance, maintainability]
+  toolCalling: false # 开启后模型可调用只读工具 read_file/list_symbols/search_repo（需要模型支持 tool calling）
+  toolTimeoutMs: 10000 # 单次工具执行超时；超时按工具错误返回给模型
+  toolCharBudget: 120000 # 本次审查所有工具输出的累计字符预算
+  dimensions: [correctness, security, performance] # 当前实现只有这三个 LLM 维度
   blockOn: BLOCKER # BLOCKER | WARNING | NIT
   ignorePatterns: ['*.lock', 'pnpm-lock.yaml', 'dist/**', '*.min.js']
   maxFiles: 200 # 单次审查纳入的文件数上限；超限按风险分降序截断并在报告中标注
@@ -322,9 +331,13 @@ review:
 
 rag:
   enabled: true
-  knowledgeBasePaths: ['docs/']
+  knowledgeBasePaths: ['.'] # 默认索引整个仓库（自动跳过依赖/产物目录）
   indexDir: .ai-review-cache/vectors
   topK: 5
+  embedding:
+    model: nomic-embed-text
+    # baseUrl: http://127.0.0.1:11434/v1
+    # apiKey: ollama
 
 staticAnalysis:
   enabledTools: [ast_parse, complexity_check, secret_scan, dependency_scan, custom_rule_check]
@@ -531,8 +544,8 @@ SSE 事件通过 `event` + JSON `data` 发送：
 
 ## 审查缓存与 RAG 索引
 
-- **审查缓存**：键包含 agent、prompt 版本和代码内容，与仓库路径无关；相同代码块可以跨审查、跨仓库复用。prompt 或输出契约变化时递增 `REVIEW_PROMPT_VERSION`，缓存自动失效。
-- **RAG 索引**：默认持久化到 `.ai-review-cache/vectors`，知识库路径由 `rag.knowledgeBasePaths` 指定。在后台「知识库」重建后只重新向量化新增或变化的块。
+- **审查缓存**：键包含维度、prompt 版本、模型、规则指纹和代码内容；规则/模型变化会自动失效。命中后会按当前上下文重新校验行号，避免跨仓库复用时写错文件路径。
+- **RAG 索引**：默认持久化到 `.ai-review-cache/vectors`，知识库路径由 `rag.knowledgeBasePaths` 指定（默认整个仓库）。检索跨文件召回，在后台「知识库」重建后只重新向量化新增或变化的块。
 - **运行时降级**：索引或模型服务不可用不会改变确定性静态分析的职责；报告会保留可用结果并标注受限阶段。
 
 ## 基准测试与测试策略

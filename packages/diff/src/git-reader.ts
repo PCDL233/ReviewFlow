@@ -187,6 +187,61 @@ export class GitReader {
   }
 
   /**
+   * 在仓库内搜索文本（ReAct 工具用，只读）。
+   * 参数经数组传递，`-e` 后的查询不会被当作 git 选项；无匹配/非 git 仓库返回空串。
+   * @param query 查询文本（≤200 字符，不以 `-` 开头）
+   * @param maxResults 每个文件的最大匹配数
+   * @returns `git grep -n` 的原始输出；无结果或错误时为空串
+   */
+  public async search(query: string, maxResults = 50): Promise<string> {
+    const trimmed = query.trim();
+    if (trimmed === '' || trimmed.length > 200 || trimmed.startsWith('-')) return '';
+    try {
+      return await this.git(
+        'grep',
+        '-n',
+        '-I',
+        '-m',
+        String(Math.max(1, Math.min(100, maxResults))),
+        '-e',
+        trimmed,
+        '--',
+        '.',
+      );
+    } catch {
+      // “没有匹配”与“非 git 仓库”都按空结果降级：工具调用不应因此失败
+      return '';
+    }
+  }
+
+  /**
+   * 查找标识符的引用位置（`git grep -w`，只读）。
+   * @param symbol 合法标识符（字母/下划线/$ 开头）
+   * @param maxResults 每个文件的最大匹配数
+   * @returns `git grep -n` 原始输出；非法标识符/无匹配/错误时为空串
+   */
+  public async searchSymbol(symbol: string, maxResults = 50): Promise<string> {
+    if (!/^[A-Za-z_$][\w$]*$/.test(symbol)) return '';
+    try {
+      return await this.git(
+        'grep',
+        '-n',
+        '-I',
+        '-w',
+        '-m',
+        String(Math.max(1, Math.min(100, maxResults))),
+        '-e',
+        symbol,
+        '--',
+        '.',
+      );
+    } catch {
+      // 无匹配或非 git 仓库：按空结果降级
+      return '';
+    }
+  }
+
+  /**
    * 读取工作区状态计数，供 Web 在发起审查前做即时校验。
    * @returns 分支名与暂存/未暂存/未跟踪文件数
    * @throws {Error} 非 git 仓库或命令失败

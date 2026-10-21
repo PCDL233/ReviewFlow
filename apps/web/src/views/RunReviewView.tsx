@@ -6,8 +6,11 @@ import {
   AutoComplete,
   Button,
   Card,
+  Checkbox,
   Col,
+  Collapse,
   Form,
+  InputNumber,
   Popconfirm,
   Progress,
   Radio,
@@ -16,6 +19,7 @@ import {
   Select,
   Space,
   Steps,
+  Switch,
   Tag,
   Tooltip,
   Typography,
@@ -51,6 +55,11 @@ type RunFormValues = {
   base?: string;
   mode?: 'fast' | 'full';
   blockOn?: 'BLOCKER' | 'WARNING' | 'NIT';
+  dimensions?: Array<'correctness' | 'security' | 'performance'>;
+  maxFiles?: number;
+  maxChangedLines?: number;
+  toolCalling?: boolean;
+  includePraise?: boolean;
 };
 
 export type RunReviewViewProps = {
@@ -144,7 +153,17 @@ export function RunReviewView(props: RunReviewViewProps): ReactElement {
     mutationFn: (values: RunFormValues) => {
       const source = toSource(values);
       if (source === null) throw new Error('请先选择提交或基线分支');
-      return startReview(values.repoPath.trim(), values.mode, values.blockOn, source);
+      return startReview(values.repoPath.trim(), values.mode, values.blockOn, source, {
+        ...(values.dimensions === undefined || values.dimensions.length === 0
+          ? {}
+          : { dimensions: values.dimensions }),
+        ...(typeof values.maxFiles === 'number' ? { maxFiles: values.maxFiles } : {}),
+        ...(typeof values.maxChangedLines === 'number'
+          ? { maxChangedLines: values.maxChangedLines }
+          : {}),
+        ...(values.toolCalling === undefined ? {} : { toolCalling: values.toolCalling }),
+        ...(values.includePraise === undefined ? {} : { includePraise: values.includePraise }),
+      });
     },
     onSuccess: (reviewId) => {
       startedAtRef.current = Date.now();
@@ -374,6 +393,68 @@ export function RunReviewView(props: RunReviewViewProps): ReactElement {
                   ]}
                 />
               </Form.Item>
+              <Collapse
+                ghost
+                items={[
+                  {
+                    key: 'advanced',
+                    label: '高级选项（仅本次审查生效）',
+                    children: (
+                      <Space orientation="vertical" size={12} style={{ width: '100%' }}>
+                        <Form.Item
+                          label="审查维度"
+                          name="dimensions"
+                          extra="不选择则沿用系统配置；性能维度会增加耗时与 token。"
+                        >
+                          <Checkbox.Group
+                            disabled={running}
+                            options={[
+                              { value: 'correctness', label: '正确性' },
+                              { value: 'security', label: '安全性' },
+                              { value: 'performance', label: '性能' },
+                            ]}
+                          />
+                        </Form.Item>
+                        <Space wrap size={16}>
+                          <Form.Item label="文件数上限" name="maxFiles">
+                            <InputNumber
+                              min={1}
+                              max={2_000}
+                              placeholder="系统默认"
+                              disabled={running}
+                            />
+                          </Form.Item>
+                          <Form.Item label="变更行上限" name="maxChangedLines">
+                            <InputNumber
+                              min={100}
+                              max={200_000}
+                              step={100}
+                              placeholder="系统默认"
+                              disabled={running}
+                            />
+                          </Form.Item>
+                        </Space>
+                        <Form.Item
+                          label="允许模型读取仓库"
+                          name="toolCalling"
+                          valuePropName="checked"
+                          extra="需要模型支持 tool calling；会调用 read_file / list_symbols / search_repo。"
+                        >
+                          <Switch disabled={running} />
+                        </Form.Item>
+                        <Form.Item
+                          label="保留 PRAISE"
+                          name="includePraise"
+                          valuePropName="checked"
+                          extra="关闭后正向反馈不进入报告与统计。"
+                        >
+                          <Switch disabled={running} />
+                        </Form.Item>
+                      </Space>
+                    ),
+                  },
+                ]}
+              />
               <Form.Item className="review-form-actions">
                 <Space wrap>
                   <Button

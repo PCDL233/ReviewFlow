@@ -54,8 +54,9 @@ describe('SqliteCheckpointSaver', () => {
     store.saveReviewJob('running', { repoPath: 'D:/repo', mode: 'fast' });
 
     expect(store.pruneLanggraphCheckpoints(new Date(Date.now() + 1_000).toISOString())).toBe(1);
-    expect(await saver.getTuple({ configurable: { thread_id: 'finished' } })).toBeUndefined();
-    expect(await saver.getTuple({ configurable: { thread_id: 'running' } })).toBeDefined();
+    const reloaded = new SqliteCheckpointSaver(sqlite);
+    expect(await reloaded.getTuple({ configurable: { thread_id: 'finished' } })).toBeUndefined();
+    expect(await reloaded.getTuple({ configurable: { thread_id: 'running' } })).toBeDefined();
     sqlite.close();
   });
 });

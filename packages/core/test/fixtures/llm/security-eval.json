@@ -1,0 +1,27 @@
+{
+  "id": "security-eval",
+  "source": "ollama:qwen3.5:0.8b",
+  "dimension": "security",
+  "expectedTitles": [
+    "Potential unsafe command or code execution"
+  ],
+  "findings": [
+    {
+      "agent": "security",
+      "severity": "WARNING",
+      "confidence": 0.8,
+      "filePath": "src/live-eval.ts",
+      "lineStart": 1,
+      "lineEnd": 1,
+      "title": "Potential unsafe command or code execution",
+      "description": "The changed code invokes a dynamic execution primitive and requires a trusted-input review.",
+      "suggestion": "Prefer a constrained API and validate all external input before execution.",
+      "codeSnippet": "eval(userInput);",
+      "lowConfidence": false,
+      "isFalsePositive": false,
+      "origin": "llm",
+      "lineScope": "changed",
+      "fingerprint": "d7690f444ef8fdd8d20bebda096beb14"
+    }
+  ]
+}

@@ -24,11 +24,7 @@ import { CardHeading, PageHeader } from '../../components/PageHeader';
 import { ErrorAlert } from '../../components/ErrorAlert';
 import { EmptyState } from '../../components/EmptyState';
 import { useNotify } from '../../hooks/use-notify';
-import {
-  ALL_ROUTE_PERMISSIONS,
-  DEFAULT_USER_PATHS,
-  WILDCARD_PERMISSION,
-} from '../../permissions';
+import { ALL_ROUTE_PERMISSIONS, DEFAULT_USER_PATHS, WILDCARD_PERMISSION } from '../../permissions';
 import type { RoutePermission } from '../../permissions';
 import { buildAdminMenu, isAdminMenuGroup } from '../../admin-menu';
 import { ADMIN_ROLES_QUERY_KEY, ADMIN_USERS_QUERY_KEY } from '../../lib/query-keys';
@@ -213,7 +209,16 @@ export function AdminRolesPage(): ReactElement {
         }}
         okText="保存"
         cancelText="取消"
-        width={520}
+        width={660}
+        rootClassName="role-modal"
+        afterOpenChange={(isOpen) => {
+          // 弹窗复用 DOM，重新打开时会保留上次的滚动位置，这里回到顶部。
+          if (isOpen) {
+            document
+              .querySelector<HTMLElement>('.role-modal .ant-modal-body')
+              ?.scrollTo({ top: 0 });
+          }
+        }}
       >
         <Form<RoleFormValues>
           form={form}
@@ -252,8 +257,8 @@ export function AdminRolesPage(): ReactElement {
             ]}
             extra="持有「全部权限」等价于内置 admin 角色；否则按页面勾选，动态子页面（如审查报告详情）随父级自动放行。"
           >
-            <Checkbox.Group style={{ width: '100%' }}>
-              <div className="permission-group">
+            <Checkbox.Group className="role-permission-groups">
+              <div className="permission-group permission-group-wide">
                 <div className="permission-group-head">
                   <span className="permission-group-title">全部权限（内置管理员等价）</span>
                 </div>

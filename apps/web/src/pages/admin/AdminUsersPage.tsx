@@ -162,26 +162,32 @@ export function AdminUsersPage(): ReactElement {
     {
       title: '用户名',
       dataIndex: 'username',
-      width: 240,
+      width: 200,
       render: (_value, record) => (
-        <Space size={10}>
+        <div className="user-cell">
           <UserAvatar user={record} className="table-avatar" />
-          <Space orientation="vertical" size={0}>
-            <Space size={6}>
-              <Typography.Text strong>{record.username}</Typography.Text>
+          <div className="user-cell-body">
+            <div className="user-cell-name">
+              <Typography.Text strong ellipsis>
+                {record.username}
+              </Typography.Text>
               {record.id === currentUser?.id ? <Tag color="blue">当前账号</Tag> : null}
-            </Space>
-            <Typography.Text type="secondary" className="numeric-cell">
+            </div>
+            <Typography.Text
+              type="secondary"
+              className="numeric-cell"
+              ellipsis={{ tooltip: record.id }}
+            >
               {record.id}
             </Typography.Text>
-          </Space>
-        </Space>
+          </div>
+        </div>
       ),
     },
     {
       title: '角色',
       dataIndex: 'role',
-      width: 200,
+      width: 170,
       render: (role: string, record) => (
         <Space size={4} wrap>
           <Tag color={role === 'admin' ? 'gold' : 'blue'}>
@@ -196,7 +202,7 @@ export function AdminUsersPage(): ReactElement {
     {
       title: '状态',
       dataIndex: 'status',
-      width: 150,
+      width: 110,
       render: (status: string, record) =>
         record.id === currentUser?.id ? (
           <Tooltip title="当前登录账号不可被禁用">
@@ -223,13 +229,13 @@ export function AdminUsersPage(): ReactElement {
     {
       title: '注册时间',
       dataIndex: 'createdAt',
-      width: 170,
+      width: 160,
       render: (value: string) => formatDateTime(value),
     },
     {
       title: '最近登录',
       dataIndex: 'lastLoginAt',
-      width: 170,
+      width: 150,
       render: (lastLoginAt: string | null) =>
         lastLoginAt === null ? (
           <Typography.Text type="secondary">从未登录</Typography.Text>
@@ -393,7 +399,7 @@ export function AdminUsersPage(): ReactElement {
             columns={columns}
             dataSource={filteredUsers}
             rowClassName={(record) => (record.id === currentUser?.id ? 'table-row-current' : '')}
-            scroll={{ x: 1100 }}
+            scroll={{ x: 900 }}
             pagination={{
               pageSize: 10,
               showSizeChanger: false,

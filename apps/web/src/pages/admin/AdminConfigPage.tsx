@@ -416,7 +416,7 @@ function RuntimeCard(props: { runtime: ServerRuntime }): ReactElement {
   const runtime = props.runtime;
   return (
     <Card
-      className="surface-card config-card config-runtime"
+      className="surface-card config-card"
       title={<CardHeading title="运行环境" hint="只读" />}
     >
       <Descriptions column={1} size="small" bordered className="knowledge-meta">

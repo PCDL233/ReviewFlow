@@ -7,7 +7,6 @@ import {
   Button,
   Card,
   Col,
-  Descriptions,
   Form,
   Input,
   InputNumber,
@@ -176,7 +175,7 @@ export function AdminAiConfigPage(): ReactElement {
           onClose={() => setValidationErrors([])}
         />
       ) : null}
-      <Row gutter={[16, 16]}>
+      <Row gutter={[16, 16]} align="stretch">
         <Col xs={24} xl={16}>
           <Card className="surface-card" title={<CardHeading title="模型服务" />}>
             {configQuery.isPending ? (
@@ -297,32 +296,44 @@ export function AdminAiConfigPage(): ReactElement {
         </Col>
         <Col xs={24} xl={8}>
           <Card
-            className="surface-card"
+            className="surface-card card-fill provider-card"
             title={<CardHeading title="Provider 说明" hint={providerInfo?.label ?? ''} />}
           >
-            <Descriptions column={1} size="small" bordered className="knowledge-meta">
-              <Descriptions.Item label="默认端点">
-                <Typography.Text code>{providerInfo?.defaultEndpoint ?? '—'}</Typography.Text>
-              </Descriptions.Item>
-              <Descriptions.Item label="推荐模型">
-                {recommendedModels.length === 0 ? (
-                  '该服务商未提供推荐列表'
-                ) : (
-                  <Space size={4} wrap>
-                    {recommendedModels.slice(0, 4).map((model) => (
-                      <Tag key={model}>{model}</Tag>
-                    ))}
-                  </Space>
-                )}
-              </Descriptions.Item>
-              <Descriptions.Item label="密钥掩码">
-                保存后回显为 <Typography.Text code>********</Typography.Text>
-                ，仅当填写新值时才覆盖。
-              </Descriptions.Item>
-              <Descriptions.Item label="环境变量优先">
-                设置 <Typography.Text code>AI_REVIEW_API_KEY</Typography.Text> 时以环境变量为准。
-              </Descriptions.Item>
-            </Descriptions>
+            <div className="provider-meta">
+              <div className="provider-meta-item">
+                <div className="provider-meta-label">默认端点</div>
+                <div className="provider-meta-value">
+                  <Typography.Text code>{providerInfo?.defaultEndpoint ?? '—'}</Typography.Text>
+                </div>
+              </div>
+              <div className="provider-meta-item">
+                <div className="provider-meta-label">推荐模型</div>
+                <div className="provider-meta-value">
+                  {recommendedModels.length === 0 ? (
+                    <Typography.Text type="secondary">该服务商未提供推荐列表</Typography.Text>
+                  ) : (
+                    <Space size={4} wrap>
+                      {recommendedModels.slice(0, 4).map((model) => (
+                        <Tag key={model}>{model}</Tag>
+                      ))}
+                    </Space>
+                  )}
+                </div>
+              </div>
+              <div className="provider-meta-item">
+                <div className="provider-meta-label">密钥掩码</div>
+                <div className="provider-meta-value">
+                  保存后回显为 <Typography.Text code>********</Typography.Text>
+                  ，仅当填写新值时才覆盖。
+                </div>
+              </div>
+              <div className="provider-meta-item">
+                <div className="provider-meta-label">环境变量优先</div>
+                <div className="provider-meta-value">
+                  设置 <Typography.Text code>AI_REVIEW_API_KEY</Typography.Text> 时以环境变量为准。
+                </div>
+              </div>
+            </div>
             <Typography.Paragraph type="secondary" className="config-help">
               未配置可用 Provider 时，审查会自动回退到本地 Ollama，再回退到 mock
               数据，保证流水线可运行。

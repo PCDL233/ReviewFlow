@@ -6,6 +6,7 @@
   box-shadow: var(--shadow-xs);
 }
 .surface-card .ant-card-head {
+  align-items: center;
   min-height: 54px;
   padding: 0 20px;
   border-bottom: 1px solid var(--line-soft);
@@ -18,8 +19,19 @@
 .surface-card .ant-card-body {
   padding: 20px;
 }
+/* 无 extra 的卡片头只有标题高度，若有按钮则会被撑高 12px 导致同一行卡片头不齐 */
 .surface-card .ant-card-extra {
-  padding: 14px 0;
+  padding: 0;
+}
+/* 同行卡片等高：与 Row align="stretch" 配合，正文撑满剩余高度 */
+.card-fill {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+}
+.card-fill > .ant-card-body {
+  flex: 1;
+  min-height: 0;
 }
 .card-heading {
   display: flex;
@@ -311,6 +323,31 @@
 }
 .data-table-card .ant-pagination {
   margin-bottom: 0;
+}
+/* 用户单元格：允许长用户名与 UUID 截断，避免撑破列宽 */
+.user-cell {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.user-cell-body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+.user-cell-name {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+.user-cell-name .ant-typography-ellipsis {
+  min-width: 0;
+}
+.user-cell-name .ant-tag {
+  flex: none;
 }
 .table-toolbar {
   display: flex;
@@ -837,14 +874,18 @@
 }
 
 /* —— 配置与知识库 —— */
+/* 卡片高度差异很大，用 grid 的两列会让同一行的短卡片被最高卡片撑开、留出大片空白，
+   因此改用多列布局：每列独立向下堆叠，卡片之间只保留固定间距。 */
 .config-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-  align-items: start;
+  column-count: 2;
+  column-gap: 16px;
 }
 .config-grid > .surface-card {
+  display: block;
+  width: 100%;
+  margin: 0 0 16px;
   break-inside: avoid;
+  page-break-inside: avoid;
 }
 .config-section-card .ant-card-head {
   min-height: 50px;
@@ -885,30 +926,52 @@
   color: var(--muted);
   font-size: 11.5px;
 }
-.config-runtime {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px 20px;
-}
-.config-runtime-item {
-  min-width: 0;
-}
-.config-runtime-label {
-  color: var(--faint);
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-.config-runtime-value {
-  overflow: hidden;
-  color: var(--ink-2);
-  font-family: var(--font-mono);
-  font-size: 11.5px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 .knowledge-meta {
   margin-top: 18px;
+}
+.provider-meta {
+  display: flex;
+  flex-direction: column;
+}
+.provider-meta-item {
+  padding: 10px 0;
+  border-bottom: 1px dashed var(--line-soft);
+}
+.provider-meta-item:first-child {
+  padding-top: 0;
+}
+.provider-meta-item:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+.provider-meta-label {
+  margin-bottom: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.provider-meta-value {
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+.provider-meta-value code {
+  font-size: 11.5px;
+  overflow-wrap: anywhere;
+}
+.provider-card .ant-card-body {
+  display: flex;
+  flex-direction: column;
+}
+.provider-card .config-help {
+  margin-top: auto !important;
+  padding-top: 14px;
+}
+.knowledge-meta .ant-descriptions-item-label {
+  white-space: nowrap;
+}
+.knowledge-meta .ant-descriptions-item-content code {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 .knowledge-error {
   margin-top: 16px;
@@ -940,7 +1003,7 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .config-grid {
-    grid-template-columns: 1fr;
+    column-count: 1;
   }
 }
 
@@ -976,9 +1039,6 @@
   }
   .diff-toolbar-right {
     width: 100%;
-  }
-  .config-runtime {
-    grid-template-columns: 1fr;
   }
   .config-savebar {
     bottom: 8px;

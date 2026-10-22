@@ -18,7 +18,6 @@ import {
   Table,
   Tabs,
   Tag,
-  Tooltip,
   Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
@@ -258,9 +257,9 @@ export function AdminHookPage(): ReactElement {
         />
       ) : null}
 
-      <Row gutter={[16, 16]}>
-        <Col xs={24} lg={12}>
-          <Card className="surface-card" title={<CardHeading title="一键安装" />}>
+      <Row gutter={[16, 16]} align="stretch">
+        <Col xs={24} xl={12}>
+          <Card className="surface-card card-fill" title={<CardHeading title="一键安装" />}>
             <Space orientation="vertical" size={12} className="full-width">
               <div>
                 <Typography.Text strong>目标仓库</Typography.Text>
@@ -318,47 +317,21 @@ export function AdminHookPage(): ReactElement {
               />
             </Space>
           </Card>
-
-          <Card
-            className="surface-card"
-            title={<CardHeading title="CI 集成" hint="GitHub Actions 示例" />}
-            extra={
-              <Button icon={<CopyOutlined />} onClick={() => void copy(CI_SNIPPET, 'CI 步骤')}>
-                复制
-              </Button>
-            }
-          >
-            <Typography.Paragraph type="secondary">
-              CI 使用同一个同步端点与令牌：响应中的 <Typography.Text code>exitCode</Typography.Text>{' '}
-              沿用 0 通过 / 1 阻断 / 2 配置环境错误 / 3 超时的契约。
-            </Typography.Paragraph>
-            <CodeBlock code={CI_SNIPPET} title=".github/workflows/ai-review.yml" maxHeight={280} />
-          </Card>
         </Col>
 
-        <Col xs={24} lg={12}>
+        <Col xs={24} xl={12}>
           <Card
-            className="surface-card"
+            className="surface-card card-fill hook-script-card"
             title={<CardHeading title="Hook 脚本内容" />}
             extra={
-              <Space>
-                <Tooltip title="复制入口脚本">
-                  <Button
-                    icon={<CopyOutlined />}
-                    disabled={script === undefined}
-                    onClick={() => void copy(script?.shell ?? '', '入口脚本')}
-                  >
-                    复制
-                  </Button>
-                </Tooltip>
-                <Button
-                  icon={<DownloadOutlined />}
-                  disabled={script === undefined}
-                  onClick={() => download(script?.runner ?? '', 'pre-commit.mjs')}
-                >
-                  下载运行器
-                </Button>
-              </Space>
+              <Button
+                size="small"
+                icon={<DownloadOutlined />}
+                disabled={script === undefined}
+                onClick={() => download(script?.runner ?? '', 'pre-commit.mjs')}
+              >
+                下载运行器
+              </Button>
             }
           >
             {scriptQuery.isPending ? (
@@ -373,17 +346,18 @@ export function AdminHookPage(): ReactElement {
               <EmptyState title="暂无可用脚本" description="请检查服务端配置后刷新。" />
             ) : (
               <Tabs
+                className="hook-script-tabs"
                 items={[
                   {
                     key: 'shell',
-                    label: script.paths.shell,
+                    label: '入口脚本',
                     children: (
                       <CodeBlock code={script.shell} title={script.paths.shell} maxHeight={300} />
                     ),
                   },
                   {
                     key: 'runner',
-                    label: script.paths.runner,
+                    label: 'Node 运行器',
                     children: (
                       <CodeBlock
                         code={script.runner}
@@ -399,6 +373,22 @@ export function AdminHookPage(): ReactElement {
           </Card>
         </Col>
       </Row>
+
+      <Card
+        className="surface-card"
+        title={<CardHeading title="CI 集成" hint="GitHub Actions 示例" />}
+        extra={
+          <Button icon={<CopyOutlined />} onClick={() => void copy(CI_SNIPPET, 'CI 步骤')}>
+            复制
+          </Button>
+        }
+      >
+        <Typography.Paragraph type="secondary">
+          CI 使用同一个同步端点与令牌：响应中的 <Typography.Text code>exitCode</Typography.Text> 沿用
+          0 通过 / 1 阻断 / 2 配置环境错误 / 3 超时的契约。
+        </Typography.Paragraph>
+        <CodeBlock code={CI_SNIPPET} title=".github/workflows/ai-review.yml" maxHeight={280} />
+      </Card>
 
       <Card
         className="surface-card"

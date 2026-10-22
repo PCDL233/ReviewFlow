@@ -1346,6 +1346,35 @@
   font-size: 12px;
   line-height: 1.9;
 }
+/* Hook 脚本卡片与左侧「一键安装」等高：标签页与代码块逐层撑满，避免底部大片留白 */
+.hook-script-card > .ant-card-body {
+  display: flex;
+  flex-direction: column;
+}
+.hook-script-card .hook-script-tabs {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.hook-script-card .ant-tabs-body-holder,
+.hook-script-card .ant-tabs-body,
+.hook-script-card .ant-tabs-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.hook-script-card .code-block {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.hook-script-card .code-block-body {
+  flex: 1;
+  min-height: 0;
+}
 .hook-steps code {
   font-family: var(--font-mono);
   font-size: 11px;

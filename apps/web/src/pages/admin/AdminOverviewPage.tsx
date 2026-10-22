@@ -125,9 +125,9 @@ export function AdminOverviewPage(): ReactElement {
         </Col>
       </Row>
 
-      <Row gutter={[16, 16]}>
+      <Row gutter={[16, 16]} align="stretch">
         <Col xs={24} lg={12}>
-          <Card className="surface-card" title={<CardHeading title="近 7 日风险趋势" />}>
+          <Card className="surface-card card-fill" title={<CardHeading title="近 7 日风险趋势" />}>
             <div className="overview-trend-head">
               <div>
                 <div className="stat-card-label">日均风险分</div>
@@ -167,7 +167,7 @@ export function AdminOverviewPage(): ReactElement {
           </Card>
         </Col>
         <Col xs={24} lg={12}>
-          <Card className="surface-card" title={<CardHeading title="最近失败审查" />}>
+          <Card className="surface-card card-fill" title={<CardHeading title="最近失败审查" />}>
             {overview.recentFailures.length === 0 ? (
               <EmptyState title="暂无失败记录" description="所有审查均已完成，服务运行正常。" />
             ) : (

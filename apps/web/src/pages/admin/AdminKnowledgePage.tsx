@@ -1,8 +1,10 @@
 import type { ReactElement } from 'react';
+import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from '@tanstack/react-router';
 import {
   Alert,
+  AutoComplete,
   Button,
   Card,
   Descriptions,
@@ -17,12 +19,13 @@ import {
 } from 'antd';
 import { DatabaseOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { KnowledgeStatus } from '@ai-review/shared/api';
-import { fetchKnowledgeStatus, reindexKnowledge } from '../../api';
+import { fetchKnowledgeStatus, fetchRepositories, reindexKnowledge } from '../../api';
 import { CardHeading, PageHeader } from '../../components/PageHeader';
 import { ErrorAlert } from '../../components/ErrorAlert';
 import { EmptyState } from '../../components/EmptyState';
 import { useNotify } from '../../hooks/use-notify';
 import { formatDateTime, formatNumber, formatRelativeTime } from '../../format';
+import { ADMIN_KNOWLEDGE_QUERY_KEY, REPOS_QUERY_KEY } from '../../lib/query-keys';
 
 const STATUS_META: Record<
   KnowledgeStatus['status'],
@@ -39,26 +42,48 @@ const STATUS_META: Record<
   error: { label: '错误', color: 'red', hint: '上一次索引失败，请检查路径后重建。' },
 };
 
-/** 知识库管理：索引状态、路径列表与重建入口。 */
+/** 知识库管理：索引状态、路径列表与重建入口。索引按仓库隔离，可切换目标仓库。 */
 export function AdminKnowledgePage(): ReactElement {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { notifyError } = useNotify();
+  // 空字符串表示“服务端默认仓库”（进程工作目录 / 最近一次重建的仓库）
+  const [repoPath, setRepoPath] = useState('');
+  const reposQuery = useQuery({ queryKey: REPOS_QUERY_KEY, queryFn: fetchRepositories });
   const statusQuery = useQuery({
-    queryKey: ['admin-knowledge'],
-    queryFn: fetchKnowledgeStatus,
+    queryKey: [...ADMIN_KNOWLEDGE_QUERY_KEY, repoPath],
+    queryFn: () => fetchKnowledgeStatus(repoPath === '' ? undefined : repoPath),
     refetchInterval: (query) => (query.state.data?.status === 'running' ? 2000 : false),
   });
   const reindexMutation = useMutation({
-    mutationFn: reindexKnowledge,
-    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ['admin-knowledge'] }),
+    mutationFn: () => reindexKnowledge(repoPath === '' ? undefined : repoPath),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: ADMIN_KNOWLEDGE_QUERY_KEY }),
     onError: (e) => notifyError(e, { title: '重建索引失败' }),
   });
+
+  const repoPicker = (
+    <AutoComplete
+      value={repoPath}
+      onChange={(value: string) => setRepoPath(value)}
+      allowClear
+      placeholder="默认仓库（服务端工作目录）"
+      style={{ width: 280 }}
+      options={(reposQuery.data ?? []).map((repo) => ({
+        value: repo.path,
+        label: `${repo.name} — ${repo.path}`,
+      }))}
+      filterOption={(input, option) =>
+        String(option?.value ?? '')
+          .toLowerCase()
+          .includes(input.toLowerCase())
+      }
+    />
+  );
 
   if (statusQuery.isPending) {
     return (
       <div className="page-stack">
-        <PageHeader eyebrow="Admin / Knowledge base" title="知识库管理" />
+        <PageHeader eyebrow="Admin / Knowledge base" title="知识库管理" extra={repoPicker} />
         <Card className="surface-card">
           <Skeleton active paragraph={{ rows: 8 }} />
         </Card>
@@ -68,7 +93,7 @@ export function AdminKnowledgePage(): ReactElement {
   if (statusQuery.isError) {
     return (
       <div className="page-stack">
-        <PageHeader eyebrow="Admin / Knowledge base" title="知识库管理" />
+        <PageHeader eyebrow="Admin / Knowledge base" title="知识库管理" extra={repoPicker} />
         <ErrorAlert
           error={statusQuery.error}
           title="知识库状态读取失败"
@@ -87,9 +112,10 @@ export function AdminKnowledgePage(): ReactElement {
       <PageHeader
         eyebrow="Admin / Knowledge base"
         title="知识库管理"
-        description="查看当前索引状态，并在文档或代码规范发生变化后重新构建 RAG 索引。"
+        description="索引按仓库隔离：选择目标仓库后可查看其索引状态并单独重建。留空表示服务端默认仓库。"
         extra={
-          <Space>
+          <Space wrap>
+            {repoPicker}
             <Button
               icon={<ReloadOutlined />}
               loading={statusQuery.isFetching}
@@ -98,8 +124,8 @@ export function AdminKnowledgePage(): ReactElement {
               刷新状态
             </Button>
             <Popconfirm
-              title="重建 RAG 索引？"
-              description="重建期间审查会跳过知识库检索，完成后自动恢复。"
+              title={repoPath === '' ? '重建默认仓库的 RAG 索引？' : `重建 ${repoPath} 的 RAG 索引？`}
+              description="重建期间该仓库的审查会跳过知识库检索，完成后自动恢复。"
               okText="开始重建"
               cancelText="取消"
               disabled={status.status === 'disabled'}
@@ -167,7 +193,7 @@ export function AdminKnowledgePage(): ReactElement {
           </Descriptions.Item>
         </Descriptions>
         {status.error !== null ? (
-          <Alert className="knowledge-error" type="error" showIcon message={status.error} />
+          <Alert className="knowledge-error" type="error" showIcon title={status.error} />
         ) : null}
         {status.status === 'disabled' ? (
           <Alert

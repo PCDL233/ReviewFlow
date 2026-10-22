@@ -11,6 +11,7 @@ import {
   Input,
   Modal,
   Select,
+  Skeleton,
   Space,
   Switch,
   Table,
@@ -44,9 +45,10 @@ import { UserAvatar } from '../../components/UserAvatar';
 import { CardHeading, PageHeader } from '../../components/PageHeader';
 import { ErrorAlert } from '../../components/ErrorAlert';
 import { EmptyState } from '../../components/EmptyState';
+import { ADMIN_ROLES_QUERY_KEY, ADMIN_USERS_QUERY_KEY } from '../../lib/query-keys';
 
-const USERS_QUERY_KEY = ['admin', 'users'] as const;
-const ROLES_QUERY_KEY = ['admin', 'roles'] as const;
+const USERS_QUERY_KEY = ADMIN_USERS_QUERY_KEY;
+const ROLES_QUERY_KEY = ADMIN_ROLES_QUERY_KEY;
 
 type StatusFilter = 'all' | 'active' | 'disabled';
 
@@ -197,7 +199,9 @@ export function AdminUsersPage(): ReactElement {
       width: 150,
       render: (status: string, record) =>
         record.id === currentUser?.id ? (
-          <Tag color="green">正常</Tag>
+          <Tooltip title="当前登录账号不可被禁用">
+            <Tag color="green">正常</Tag>
+          </Tooltip>
         ) : (
           <Tooltip title={status === 'active' ? '点击禁用该用户' : '点击启用该用户'}>
             <Switch
@@ -241,7 +245,9 @@ export function AdminUsersPage(): ReactElement {
       align: 'center',
       render: (_value, record) =>
         record.id === currentUser?.id ? (
-          <Typography.Text type="secondary">—</Typography.Text>
+          <Tooltip title="当前登录账号不可被重置密码、删除或降级">
+            <Typography.Text type="secondary">—</Typography.Text>
+          </Tooltip>
         ) : (
           <Dropdown
             trigger={['click']}
@@ -463,27 +469,40 @@ export function AdminUsersPage(): ReactElement {
           }}
           style={{ marginTop: 16 }}
         >
-          <Form.Item name="roleIds" rules={[{ required: true, message: '请至少选择一个角色' }]}>
+          <Form.Item
+            name="roleIds"
+            rules={[{ required: true, message: '请至少选择一个角色' }]}
+            extra="可多选角色，权限取并集；含 '*' 权限的角色会自动将该用户标记为管理员。"
+          >
             <Checkbox.Group style={{ width: '100%' }}>
-              <Space orientation="vertical" style={{ width: '100%' }}>
-                {(rolesQuery.data ?? []).map((role: Role) => (
-                  <Checkbox key={role.id} value={role.id}>
-                    <Space size={6}>
-                      <SafetyCertificateOutlined
-                        style={{ color: role.isSystem ? 'var(--warning)' : 'var(--brand)' }}
-                      />
-                      {role.name}
-                      {role.isSystem ? <Tag color="gold">内置</Tag> : null}
-                      <Typography.Text type="secondary">优先级 #{role.priority}</Typography.Text>
-                    </Space>
-                  </Checkbox>
-                ))}
-              </Space>
+              {rolesQuery.isPending ? (
+                <Skeleton active paragraph={{ rows: 4 }} title={false} />
+              ) : (rolesQuery.data ?? []).length === 0 ? (
+                <EmptyState
+                  title="还没有可分配的角色"
+                  description="先到「角色管理」创建一个角色，再回到这里分配。"
+                />
+              ) : (
+                <Space orientation="vertical" style={{ width: '100%' }}>
+                  {(rolesQuery.data ?? []).map((role: Role) => (
+                    <Checkbox key={role.id} value={role.id}>
+                      <Space size={6} wrap>
+                        <SafetyCertificateOutlined
+                          style={{ color: role.isSystem ? 'var(--warning)' : 'var(--brand)' }}
+                        />
+                        {role.name}
+                        {role.isSystem ? <Tag color="gold">内置</Tag> : null}
+                        {role.permissions.includes('*') ? <Tag color="purple">全部权限</Tag> : null}
+                        <Typography.Text type="secondary">
+                          优先级 #{role.priority} · {role.permissions.length} 项权限
+                        </Typography.Text>
+                      </Space>
+                    </Checkbox>
+                  ))}
+                </Space>
+              )}
             </Checkbox.Group>
           </Form.Item>
-          <Typography.Text type="secondary">
-            可多选角色，系统按优先级自动取最高优先级作为默认角色，权限取并集。
-          </Typography.Text>
         </Form>
       </Modal>
     </div>

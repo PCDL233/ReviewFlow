@@ -733,6 +733,48 @@ describe('review REST API', () => {
     expect(adminBody.calls).toHaveLength(1);
   });
 
+  it('allows roles holding only /admin/observability to read llm call audit', async () => {
+    const app = makeHarness(async () => makeState());
+    const { cookie } = await registerUser(app, 'observer-owner');
+
+    // 只授予「模型调用审计」页权限的角色：审计页必须能独立访问该接口
+    const created = await app.request('/api/admin/roles', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...auth(cookie) },
+      body: JSON.stringify({
+        name: '审核观察员',
+        priority: 50,
+        permissions: ['/admin/observability'],
+      }),
+    });
+    expect(created.status).toBe(201);
+    const { role } = (await created.json()) as { role: { id: string } };
+
+    const observer = await registerUser(app, 'observer');
+    const listed = await app.request('/api/admin/users', { headers: auth(cookie) });
+    expect(listed.status).toBe(200);
+    const { users } = (await listed.json()) as { users: Array<{ id: string; username: string }> };
+    const observerId = users.find((user) => user.username === 'observer')?.id;
+    expect(observerId).toBeDefined();
+
+    const assigned = await app.request(`/api/admin/users/${String(observerId)}/roles`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json', ...auth(cookie) },
+      body: JSON.stringify({ roleIds: [role.id] }),
+    });
+    expect(assigned.status).toBe(200);
+
+    const allowed = await app.request('/api/admin/llm-calls', {
+      headers: auth(observer.cookie),
+    });
+    expect(allowed.status).toBe(200);
+
+    // 未授予该权限的普通用户仍被拒绝
+    const other = await registerUser(app, 'plain');
+    const forbidden = await app.request('/api/admin/llm-calls', { headers: auth(other.cookie) });
+    expect(forbidden.status).toBe(403);
+  });
+
   it('supports finding lifecycle, comments, decision and compare', async () => {
     const app = makeHarness(async () => makeState());
     const { cookie } = await registerUser(app, 'lifecycle');

@@ -441,6 +441,11 @@
   flex-wrap: wrap;
   gap: 8px;
 }
+.home-hero-more {
+  align-self: flex-start;
+  margin-top: -6px;
+  color: var(--brand) !important;
+}
 .home-hero-side {
   position: relative;
   z-index: 1;
@@ -639,6 +644,15 @@
 .run-form-actions {
   margin-bottom: 0 !important;
 }
+.repo-status-hint {
+  margin-bottom: 18px;
+}
+.repo-empty-hint {
+  margin-bottom: 18px;
+}
+.progress-card .ant-card-body {
+  padding: 20px;
+}
 .run-tips {
   display: flex;
   flex-direction: column;
@@ -814,6 +828,30 @@
   flex-wrap: wrap;
   gap: 4px;
 }
+.severity-count {
+  --severity-count-color: var(--muted);
+  --severity-count-soft: var(--panel-muted);
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--severity-count-soft);
+  color: var(--severity-count-color);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+}
+.severity-count-blocker {
+  --severity-count-color: var(--severity-blocker);
+  --severity-count-soft: var(--severity-blocker-soft);
+}
+.severity-count-warning {
+  --severity-count-color: var(--severity-warning);
+  --severity-count-soft: var(--severity-warning-soft);
+}
+.severity-count-nit {
+  --severity-count-color: var(--severity-nit);
+  --severity-count-soft: var(--severity-nit-soft);
+}
 .report-hero {
   display: flex;
   flex-wrap: wrap;
@@ -960,6 +998,20 @@
 .severity-summary-praise {
   --severity-color: var(--severity-praise);
   --severity-soft: var(--severity-praise-soft);
+}
+.compare-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--panel-muted);
+  font-size: 11.5px;
+}
+.compare-row .ant-typography {
+  word-break: break-all;
 }
 .report-columns {
   display: grid;

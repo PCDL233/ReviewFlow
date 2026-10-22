@@ -368,18 +368,28 @@ export async function updateAdminConfig(config: AdminConfig): Promise<AdminConfi
   return body.config;
 }
 
-export async function fetchKnowledgeStatus(): Promise<KnowledgeStatus> {
+/** 读取知识库索引状态；传入 repoPath 时按仓库维度查询（索引按仓库隔离）。 */
+export async function fetchKnowledgeStatus(repoPath?: string): Promise<KnowledgeStatus> {
+  const query =
+    repoPath === undefined || repoPath === ''
+      ? ''
+      : `?${new URLSearchParams({ repoPath }).toString()}`;
   const body = await parseResponse(
     KnowledgeStatusResponseSchema,
-    await fetch(`${API_BASE}/admin/knowledge`),
+    await fetch(`${API_BASE}/admin/knowledge${query}`),
   );
   return body.knowledge;
 }
 
-export async function reindexKnowledge(): Promise<void> {
+/** 触发指定仓库的知识库重建（异步任务，状态由 fetchKnowledgeStatus 轮询）。 */
+export async function reindexKnowledge(repoPath?: string): Promise<void> {
+  const query =
+    repoPath === undefined || repoPath === ''
+      ? ''
+      : `?${new URLSearchParams({ repoPath }).toString()}`;
   await parseResponse(
     KnowledgeReindexResponseSchema,
-    await fetch(`${API_BASE}/admin/knowledge/reindex`, { method: 'POST' }),
+    await fetch(`${API_BASE}/admin/knowledge/reindex${query}`, { method: 'POST' }),
   );
 }
 

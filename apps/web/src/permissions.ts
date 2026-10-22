@@ -24,6 +24,7 @@ export const ALL_ROUTE_PERMISSIONS: RoutePermission[] = [
   { path: '/admin/rules', label: '自定义规则', group: 'admin' },
   { path: '/admin/login-logs', label: '登录日志', group: 'admin' },
   { path: '/admin/operation-logs', label: '操作日志', group: 'admin' },
+  { path: '/admin/observability', label: '模型调用审计', group: 'admin' },
   { path: '/admin/ai', label: 'AI 模型', group: 'admin' },
   { path: '/admin/knowledge', label: '知识库', group: 'admin' },
   { path: '/admin/tools', label: '分析工具', group: 'admin' },
@@ -34,6 +35,9 @@ export const ALL_ROUTE_PERMISSIONS: RoutePermission[] = [
 
 /** 用户端（非 admin）默认可用路径——用于未配置角色时兜底 */
 export const DEFAULT_USER_PATHS = ['/', '/run', '/reviews', '/stats', '/profile'];
+
+/** 通配权限：拥有全部页面与操作权限（内置 admin 角色即持有该值） */
+export const WILDCARD_PERMISSION = '*';
 
 /**
  * 判断某用户是否可访问指定路由路径。

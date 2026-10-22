@@ -6,7 +6,6 @@ import {
   Button,
   Card,
   Col,
-  Empty,
   Input,
   InputNumber,
   Row,
@@ -198,7 +197,7 @@ export function AdminToolsPage(): ReactElement {
               aria-label="待扫描的 diff 文本"
             />
             {secretError === undefined ? null : (
-              <Alert className="knowledge-error" type="warning" showIcon message={secretError} />
+              <Alert className="knowledge-error" type="warning" showIcon title={secretError} />
             )}
             <Button
               className="tool-action"
@@ -303,9 +302,6 @@ export function AdminToolsPage(): ReactElement {
                 scroll={{ x: 620 }}
               />
             )}
-            {complexityMutation.data !== undefined && complexityMutation.data.length === 0 ? (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={null} />
-            ) : null}
           </Card>
         </Col>
       </Row>

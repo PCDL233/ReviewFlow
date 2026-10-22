@@ -136,6 +136,13 @@ export function AdminRulesPage(): ReactElement {
     saveMutation.mutate(rules.filter((item) => item !== rule));
   };
 
+  /** 打开试跑抽屉并带入所点规则：清空上一次的命中结果，避免误读旧结果。 */
+  const openTest = (rule: CustomRule): void => {
+    setTestRule(rule);
+    setTestResult(null);
+    setTestOpen(true);
+  };
+
   const runTest = (): void => {
     if (testRule === null) return;
     testMutation.mutate({
@@ -211,7 +218,7 @@ export function AdminRulesPage(): ReactElement {
       render: (_, record) => (
         <Space size={8}>
           <Typography.Link onClick={() => openEdit(record)}>编辑</Typography.Link>
-          <Typography.Link onClick={() => setTestRule(record)}>试跑</Typography.Link>
+          <Typography.Link onClick={() => openTest(record)}>试跑</Typography.Link>
           <Popconfirm
             title="确认删除该规则？"
             description="删除后本次审查不再应用此规则。"

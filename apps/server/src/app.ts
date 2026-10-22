@@ -1624,9 +1624,10 @@ export function buildApp(deps: AppDeps): Hono<AppEnv> {
   );
 
   // —— 模型调用审计（可观测页数据源；只读，不触发任何模型请求）——
+  // 同时接受 /admin（概览页沿用）与 /admin/observability，使只被授予审计页的角色也能查看。
   app.get(
     '/api/admin/llm-calls',
-    requirePermission('/admin'),
+    requireAnyPermission('/admin', '/admin/observability'),
     zValidator('query', LlmCallListQuerySchema),
     (c) =>
       c.json(

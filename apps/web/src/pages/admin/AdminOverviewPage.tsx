@@ -268,7 +268,7 @@ export function AdminOverviewPage(): ReactElement {
         </Card>
       ) : null}
       <Typography.Text type="secondary" className="table-muted">
-        数据更新时间：{formatDateTime(new Date().toISOString())}
+        数据更新时间：{formatDateTime(new Date(overviewQuery.dataUpdatedAt).toISOString())}
       </Typography.Text>
     </div>
   );

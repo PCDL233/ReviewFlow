@@ -9,6 +9,7 @@ import { CardHeading, PageHeader } from '../../components/PageHeader';
 import { ErrorAlert } from '../../components/ErrorAlert';
 import { getErrorStatus } from '../../parse-response';
 import { useNotify } from '../../hooks/use-notify';
+import { ADMIN_CONFIG_QUERY_KEY } from '../../lib/query-keys';
 
 const CONFIG_SECTIONS = [
   { title: '模型提供商', description: 'provider、model、默认端点与 token 预算' },
@@ -30,7 +31,7 @@ export function AdminInitPage(): ReactElement {
     onSuccess: () => {
       setConflict(false);
       setCreated(true);
-      void queryClient.invalidateQueries({ queryKey: ['admin-config'] });
+      void queryClient.invalidateQueries({ queryKey: ADMIN_CONFIG_QUERY_KEY });
     },
     onError: (e) => {
       if (getErrorStatus(e) === 409) {

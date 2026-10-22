@@ -78,15 +78,25 @@ export function AdminHookPage(): ReactElement {
   const tokensQuery = useQuery({ queryKey: ['hook-tokens'], queryFn: fetchHookTokens });
 
   const installMutation = useMutation({
-    mutationFn: () => installHook({ repoPath, tokenLabel, overwrite }),
+    mutationFn: () => installHook({ repoPath: repoPath.trim(), tokenLabel, overwrite }),
     onSuccess: (result) => {
       setPlainText(result.plainText);
       void queryClient.invalidateQueries({ queryKey: ['hook-tokens'] });
-      if (result.skipped.length > 0 && !overwrite) {
-        void message.warning('已存在同名文件，未覆盖。如需重装请打开「覆盖已有 Hook」。');
+      // 全部文件已存在且未选择覆盖时，服务端不会写入任何内容——此时必须明确告警，
+      // 否则上面的“令牌明文”提示会让人误以为安装成功。
+      if (!result.installed) {
+        void message.warning(
+          result.skipped.length > 0
+            ? `已存在 ${result.skipped.join('、')}，未覆盖。如需重装请打开「覆盖已有 Hook」。`
+            : '未写入任何文件，请检查目标仓库路径。',
+        );
         return;
       }
-      void message.success(`已写入 ${result.files.length} 个文件`);
+      void message.success(
+        result.skipped.length > 0
+          ? `已写入 ${result.files.length} 个文件，跳过 ${result.skipped.length} 个已存在文件`
+          : `已写入 ${result.files.length} 个文件`,
+      );
     },
     onError: (e) => notifyError(e, { title: '安装 Hook 失败' }),
   });
@@ -152,11 +162,31 @@ export function AdminHookPage(): ReactElement {
         value === null ? <span className="table-muted">从未使用</span> : formatDateTime(value),
     },
     {
+      title: '过期时间',
+      dataIndex: 'expiresAt',
+      width: 170,
+      render: (value: string | null) => {
+        if (value === null) return <span className="table-muted">永不过期</span>;
+        const expired = new Date(value).getTime() <= Date.now();
+        return (
+          <Space size={4}>
+            <span className={expired ? 'numeric-cell' : undefined}>{formatDateTime(value)}</span>
+            {expired ? <Tag color="error">已过期</Tag> : null}
+          </Space>
+        );
+      },
+    },
+    {
       title: '状态',
-      dataIndex: 'revokedAt',
+      key: 'status',
       width: 100,
-      render: (value: string | null) =>
-        value === null ? <Tag color="success">有效</Tag> : <Tag>已吊销</Tag>,
+      render: (_value, record) => {
+        if (record.revokedAt !== null) return <Tag>已吊销</Tag>;
+        if (record.expiresAt !== null && new Date(record.expiresAt).getTime() <= Date.now()) {
+          return <Tag color="error">已过期</Tag>;
+        }
+        return <Tag color="success">有效</Tag>;
+      },
     },
     {
       title: '操作',
@@ -172,7 +202,11 @@ export function AdminHookPage(): ReactElement {
             cancelText="取消"
             onConfirm={() => revokeMutation.mutate(record.id)}
           >
-            <Button size="small" danger>
+            <Button
+              size="small"
+              danger
+              loading={revokeMutation.isPending && revokeMutation.variables === record.id}
+            >
               吊销
             </Button>
           </Popconfirm>

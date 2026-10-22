@@ -1,22 +1,9 @@
 import type { ReactElement } from 'react';
 import {
-  AppstoreOutlined,
-  AuditOutlined,
   BarChartOutlined,
-  BookOutlined,
-  BugOutlined,
   DashboardOutlined,
-  FileAddOutlined,
-  FileSearchOutlined,
-  FileTextOutlined,
   HistoryOutlined,
   PlayCircleOutlined,
-  RobotOutlined,
-  SafetyCertificateOutlined,
-  SettingOutlined,
-  TeamOutlined,
-  ToolOutlined,
-  UnorderedListOutlined,
 } from '@ant-design/icons';
 
 export type NavLeaf = {
@@ -46,51 +33,7 @@ export const USER_NAV: NavEntry[] = [
   { key: '/stats', label: '统计分析', icon: <BarChartOutlined /> },
 ];
 
-/** 管理后台分组导航；具体可见项仍由 admin-menu 按 RBAC 过滤。 */
-export const ADMIN_NAV_META: NavEntry[] = [
-  { key: '/admin', label: '系统概览', icon: <AppstoreOutlined /> },
-  {
-    key: 'group:access',
-    label: '用户与权限',
-    icon: <TeamOutlined />,
-    children: [
-      { key: '/admin/users', label: '用户管理', icon: <TeamOutlined /> },
-      { key: '/admin/roles', label: '角色管理', icon: <SafetyCertificateOutlined /> },
-    ],
-  },
-  {
-    key: 'group:review',
-    label: '审查配置',
-    icon: <UnorderedListOutlined />,
-    children: [
-      { key: '/admin/rules', label: '自定义规则', icon: <UnorderedListOutlined /> },
-      { key: '/admin/knowledge', label: '知识库', icon: <BookOutlined /> },
-      { key: '/admin/tools', label: '分析工具', icon: <ToolOutlined /> },
-    ],
-  },
-  {
-    key: 'group:settings',
-    label: '系统设置',
-    icon: <SettingOutlined />,
-    children: [
-      { key: '/admin/ai', label: 'AI 模型', icon: <RobotOutlined /> },
-      { key: '/admin/config', label: '系统配置', icon: <SettingOutlined /> },
-      { key: '/admin/init', label: '配置初始化', icon: <FileAddOutlined /> },
-      { key: '/admin/hook', label: 'Git Hook 与 CI', icon: <BugOutlined /> },
-    ],
-  },
-  {
-    key: 'group:logs',
-    label: '系统日志',
-    icon: <AuditOutlined />,
-    children: [
-      { key: '/admin/login-logs', label: '登录日志', icon: <FileSearchOutlined /> },
-      { key: '/admin/operation-logs', label: '操作日志', icon: <AuditOutlined /> },
-    ],
-  },
-  { key: '/admin/metrics', label: '系统指标', icon: <FileTextOutlined /> },
-];
-
+// 管理后台菜单结构唯一定义在 admin-menu.tsx（需按 RBAC 过滤），此处不再重复维护。
 const ADMIN_TITLES: Record<string, string> = {
   '/admin': '系统概览',
   '/admin/users': '用户管理',
@@ -98,6 +41,7 @@ const ADMIN_TITLES: Record<string, string> = {
   '/admin/rules': '自定义审查规则',
   '/admin/login-logs': '登录日志',
   '/admin/operation-logs': '操作日志',
+  '/admin/observability': '模型调用审计',
   '/admin/ai': 'AI 模型配置',
   '/admin/config': '系统配置',
   '/admin/knowledge': '知识库',

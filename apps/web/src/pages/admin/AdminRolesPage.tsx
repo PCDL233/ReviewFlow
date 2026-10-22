@@ -24,7 +24,14 @@ import { CardHeading, PageHeader } from '../../components/PageHeader';
 import { ErrorAlert } from '../../components/ErrorAlert';
 import { EmptyState } from '../../components/EmptyState';
 import { useNotify } from '../../hooks/use-notify';
-import { ALL_ROUTE_PERMISSIONS } from '../../permissions';
+import {
+  ALL_ROUTE_PERMISSIONS,
+  DEFAULT_USER_PATHS,
+  WILDCARD_PERMISSION,
+} from '../../permissions';
+import type { RoutePermission } from '../../permissions';
+import { buildAdminMenu, isAdminMenuGroup } from '../../admin-menu';
+import { ADMIN_ROLES_QUERY_KEY, ADMIN_USERS_QUERY_KEY } from '../../lib/query-keys';
 
 type RoleFormValues = RoleInput;
 
@@ -36,11 +43,11 @@ export function AdminRolesPage(): ReactElement {
   const [open, setOpen] = useState(false);
   const [form] = Form.useForm<RoleFormValues>();
 
-  const rolesQuery = useQuery({ queryKey: ['admin', 'roles'], queryFn: fetchRoles });
+  const rolesQuery = useQuery({ queryKey: ADMIN_ROLES_QUERY_KEY, queryFn: fetchRoles });
 
   const invalidate = (): void => {
-    void queryClient.invalidateQueries({ queryKey: ['admin', 'roles'] });
-    void queryClient.invalidateQueries({ queryKey: ['admin', 'users'] });
+    void queryClient.invalidateQueries({ queryKey: ADMIN_ROLES_QUERY_KEY });
+    void queryClient.invalidateQueries({ queryKey: ADMIN_USERS_QUERY_KEY });
     // 角色权限变更会影响用户的导航与页面可见性，刷新当前登录用户的认证态
     void queryClient.invalidateQueries({ queryKey: ['auth'] });
   };
@@ -70,7 +77,7 @@ export function AdminRolesPage(): ReactElement {
   const openCreate = (): void => {
     setEditing(null);
     form.resetFields();
-    form.setFieldsValue({ priority: 100, permissions: DEFAULT_PERMISSIONS });
+    form.setFieldsValue({ priority: 100, permissions: DEFAULT_USER_PATHS });
     setOpen(true);
   };
 
@@ -114,9 +121,12 @@ export function AdminRolesPage(): ReactElement {
       title: '权限数',
       key: 'permissionCount',
       width: 100,
-      render: (_: unknown, record) => (
-        <Typography.Text>{record.permissions.length}</Typography.Text>
-      ),
+      render: (_: unknown, record) =>
+        record.permissions.includes(WILDCARD_PERMISSION) ? (
+          <Tag color="purple">全部</Tag>
+        ) : (
+          <Typography.Text>{record.permissions.length}</Typography.Text>
+        ),
     },
     {
       title: '操作',
@@ -232,26 +242,37 @@ export function AdminRolesPage(): ReactElement {
           <Form.Item
             label="页面访问权限"
             name="permissions"
-            rules={[{ required: true, message: '请至少选择一个权限' }]}
+            rules={[
+              {
+                validator: (_rule, value: string[] | undefined) =>
+                  value !== undefined && value.length > 0
+                    ? Promise.resolve()
+                    : Promise.reject(new Error('请至少选择一个权限')),
+              },
+            ]}
+            extra="持有「全部权限」等价于内置 admin 角色；否则按页面勾选，动态子页面（如审查报告详情）随父级自动放行。"
           >
             <Checkbox.Group style={{ width: '100%' }}>
-              <Space orientation="vertical" style={{ width: '100%' }}>
-                {ALL_ROUTE_PERMISSIONS.filter((p) => p.group === 'user').map((p) => (
-                  <Checkbox key={p.path} value={p.path}>
-                    {p.label}
-                  </Checkbox>
-                ))}
-              </Space>
-              <Typography.Text type="secondary" style={{ display: 'block', margin: '12px 0 6px' }}>
-                管理后台
-              </Typography.Text>
-              <Space orientation="vertical" style={{ width: '100%' }}>
-                {ALL_ROUTE_PERMISSIONS.filter((p) => p.group === 'admin').map((p) => (
-                  <Checkbox key={p.path} value={p.path}>
-                    {p.label}
-                  </Checkbox>
-                ))}
-              </Space>
+              <div className="permission-group">
+                <div className="permission-group-head">
+                  <span className="permission-group-title">全部权限（内置管理员等价）</span>
+                </div>
+                <Checkbox value={WILDCARD_PERMISSION}>授予所有页面与操作权限</Checkbox>
+              </div>
+              {PERMISSION_GROUPS.map((group) => (
+                <div key={group.title} className="permission-group">
+                  <div className="permission-group-head">
+                    <span className="permission-group-title">{group.title}</span>
+                  </div>
+                  <div className="permission-grid">
+                    {group.items.map((item) => (
+                      <Checkbox key={item.path} value={item.path}>
+                        {item.label}
+                      </Checkbox>
+                    ))}
+                  </div>
+                </div>
+              ))}
             </Checkbox.Group>
           </Form.Item>
         </Form>
@@ -260,4 +281,28 @@ export function AdminRolesPage(): ReactElement {
   );
 }
 
-const DEFAULT_PERMISSIONS = ['/', '/run', '/reviews', '/stats', '/profile'];
+/** 权限选择分组：用户端一组，管理后台直接复用侧栏菜单结构，避免两处维护导致漂移。 */
+function permissionGroups(): Array<{ title: string; items: RoutePermission[] }> {
+  const userItems = ALL_ROUTE_PERMISSIONS.filter((item) => item.group === 'user');
+  const byPath = new Map(ALL_ROUTE_PERMISSIONS.map((item) => [item.path, item]));
+  const groups: Array<{ title: string; items: RoutePermission[] }> = [
+    { title: '用户端', items: userItems },
+  ];
+  for (const entry of buildAdminMenu([WILDCARD_PERMISSION])) {
+    if (!isAdminMenuGroup(entry)) {
+      const item = byPath.get(entry.key);
+      if (item !== undefined) {
+        groups.push({ title: `管理后台 · ${entry.label}`, items: [item] });
+      }
+      continue;
+    }
+    const items = entry.children.flatMap((child) => {
+      const item = byPath.get(child.key);
+      return item === undefined ? [] : [item];
+    });
+    if (items.length > 0) groups.push({ title: `管理后台 · ${entry.label}`, items });
+  }
+  return groups;
+}
+
+const PERMISSION_GROUPS = permissionGroups();

@@ -22,6 +22,9 @@ import { CardHeading, PageHeader } from '../../components/PageHeader';
 import { ErrorAlert } from '../../components/ErrorAlert';
 import { CodeBlock } from '../../components/CodeBlock';
 import { EmptyState } from '../../components/EmptyState';
+import { StatCard } from '../../components/StatCard';
+import type { StatAccent } from '../../components/StatCard';
+import { formatNumber } from '../../format';
 
 type RefreshKey = 'off' | '5s' | '15s';
 
@@ -36,6 +39,23 @@ const TYPE_COLORS: Record<string, string> = {
   gauge: 'green',
   histogram: 'purple',
   summary: 'gold',
+};
+
+/** 概览卡的强调色与说明：与表格中的类型标签配色保持一致。 */
+const TYPE_ACCENTS: Record<string, StatAccent> = {
+  counter: 'indigo',
+  gauge: 'emerald',
+  histogram: 'teal',
+  summary: 'amber',
+  '未标注类型': 'slate',
+};
+
+const TYPE_HINTS: Record<string, string> = {
+  counter: '单调递增的累计值',
+  gauge: '可增可减的瞬时值',
+  histogram: '分桶统计的观测分布',
+  summary: '分位数摘要统计',
+  '未标注类型': '缺少 # TYPE 声明的指标',
 };
 
 /** 系统指标：Prometheus 文本解析 + 搜索/自动刷新/原始文本。 */
@@ -155,17 +175,21 @@ export function AdminMetricsPage(): ReactElement {
       />
       <Row gutter={[16, 16]}>
         <Col xs={12} md={6}>
-          <Card className="surface-card stat-card accent-blue">
-            <div className="stat-card-label">指标条数</div>
-            <div className="stat-card-value">{rows.length}</div>
-          </Card>
+          <StatCard
+            title="指标条数"
+            value={formatNumber(rows.length)}
+            accent="indigo"
+            hint={keywordText === '' ? '全部已暴露指标' : `筛选后 ${filteredRows.length} 条`}
+          />
         </Col>
-        {Array.from(summary.entries()).map(([type, count]) => (
+        {[...summary.entries()].map(([type, count]) => (
           <Col key={type} xs={12} md={6}>
-            <Card className="surface-card stat-card accent-teal">
-              <div className="stat-card-label">{type}</div>
-              <div className="stat-card-value">{count}</div>
-            </Card>
+            <StatCard
+              title={type}
+              value={formatNumber(count)}
+              accent={TYPE_ACCENTS[type] ?? 'slate'}
+              hint={TYPE_HINTS[type] ?? '自定义指标类型'}
+            />
           </Col>
         ))}
       </Row>

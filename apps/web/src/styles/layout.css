@@ -406,6 +406,11 @@
   color: var(--muted);
   font-size: 13px;
 }
+.route-loading-label {
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.01em;
+}
 .route-state {
   display: flex;
   align-items: center;

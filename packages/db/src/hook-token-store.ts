@@ -75,6 +75,7 @@ export class HookTokenStore {
         prefix: plainText.slice(0, PREFIX_LENGTH),
         createdBy: input.createdBy ?? null,
         createdAt: now.toISOString(),
+        expiresAt: expiresAt.toISOString(),
         lastUsedAt: null,
         revokedAt: null,
       },
@@ -95,6 +96,7 @@ export class HookTokenStore {
         prefix: row.prefix,
         createdBy: row.createdBy,
         createdAt: row.createdAt,
+        expiresAt: row.expiresAt,
         lastUsedAt: row.lastUsedAt,
         revokedAt: row.revokedAt,
       }));
@@ -125,6 +127,7 @@ export class HookTokenStore {
       prefix: row.prefix,
       createdBy: row.createdBy,
       createdAt: row.createdAt,
+      expiresAt: row.expiresAt,
       lastUsedAt: row.lastUsedAt,
       revokedAt: row.revokedAt,
     };

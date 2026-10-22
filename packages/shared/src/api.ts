@@ -709,6 +709,8 @@ export const HookTokenSchema = z.object({
   prefix: z.string(),
   createdBy: z.string().nullable(),
   createdAt: z.string(),
+  /** 过期时间；null 表示永不过期（旧数据）。过期后 verify 会直接拒绝 */
+  expiresAt: z.string().nullable(),
   /** 最后使用时间；从未使用为 null */
   lastUsedAt: z.string().nullable(),
   revokedAt: z.string().nullable(),

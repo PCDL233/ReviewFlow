@@ -253,10 +253,15 @@ export function LogListPage(props: { kind: LogKind }): ReactElement {
       ? Object.entries(LOGIN_ACTION_LABELS).map(([value, label]) => ({ value, label }))
       : Object.entries(OPERATION_ACTION_LABELS).map(([value, label]) => ({ value, label }));
 
+  const actionLabelOf = (action: string): string =>
+    (kind === 'login' ? LOGIN_ACTION_LABELS : OPERATION_ACTION_LABELS)[
+      action as LoginLogAction & OperationLogAction
+    ] ?? action;
+
   const activeTags = [
     filters.from === undefined ? null : `日期 ${filters.from} ~ ${filters.to ?? '今天'}`,
     filters.status === undefined ? null : `结果 ${filters.status === 'success' ? '成功' : '失败'}`,
-    filters.action === undefined ? null : `动作 ${filters.action}`,
+    filters.action === undefined ? null : `动作 ${actionLabelOf(filters.action)}`,
     filters.q === undefined ? null : `关键词 ${filters.q}`,
   ].filter((tag): tag is string => tag !== null);
 

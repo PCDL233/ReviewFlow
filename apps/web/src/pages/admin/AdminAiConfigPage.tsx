@@ -22,18 +22,18 @@ import {
 import { ReloadOutlined } from '@ant-design/icons';
 import type { AdminConfig } from '@ai-review/shared/api';
 import { AdminConfigSchema, MODEL_PROVIDER_LIST, MODEL_PROVIDERS } from '@ai-review/shared/api';
-import { fetchAdminConfig, updateAdminConfig } from '../../api';
+import { fetchAdminConfigPayload, updateAdminConfig } from '../../api';
 import { CardHeading, PageHeader } from '../../components/PageHeader';
 import { ErrorAlert } from '../../components/ErrorAlert';
 import { useNotify } from '../../hooks/use-notify';
+import { useUnsavedChanges } from '../../hooks/use-unsaved-changes';
+import { ADMIN_CONFIG_QUERY_KEY } from '../../lib/query-keys';
 
 /** Provider 下拉选项直接取自 shared 目录，与配置 schema 同源，避免双份维护。 */
 const PROVIDER_OPTIONS = MODEL_PROVIDER_LIST.map((info) => ({
   label: info.label,
   value: info.id,
 }));
-
-const CONFIG_QUERY_KEY = ['admin-config'] as const;
 
 function providerInfoOf(
   provider: AdminConfig['llm']['provider'] | undefined,
@@ -55,11 +55,17 @@ export function AdminAiConfigPage(): ReactElement {
   const queryClient = useQueryClient();
   const { notifyError } = useNotify();
 
-  const configQuery = useQuery({ queryKey: CONFIG_QUERY_KEY, queryFn: fetchAdminConfig });
+  // 与「系统配置」页共用同一查询与同一数据形状（配置 + 运行环境），
+  // 否则先打开任一页面都会污染另一页面的缓存，保存时把配置重置为默认值。
+  const configQuery = useQuery({
+    queryKey: ADMIN_CONFIG_QUERY_KEY,
+    queryFn: fetchAdminConfigPayload,
+  });
   const provider =
     Form.useWatch<AdminConfig['llm']['provider']>(['llm', 'provider'], form) ?? 'anthropic';
   const recommendedModels = MODEL_PROVIDERS[provider]?.recommendedModels ?? [];
   const providerInfo = providerInfoOf(provider);
+  const unsavedGuard = useUnsavedChanges(dirty);
 
   const saveMutation = useMutation({
     mutationFn: (config: AdminConfig) => updateAdminConfig(config),
@@ -67,14 +73,14 @@ export function AdminAiConfigPage(): ReactElement {
       form.setFieldsValue(config);
       setSaved(true);
       setDirty(false);
-      void queryClient.invalidateQueries({ queryKey: CONFIG_QUERY_KEY });
+      void queryClient.invalidateQueries({ queryKey: ADMIN_CONFIG_QUERY_KEY });
     },
     onError: (e) => notifyError(e, { title: '保存配置失败' }),
   });
 
   useEffect(() => {
     if (configQuery.data !== undefined) {
-      form.setFieldsValue(configQuery.data);
+      form.setFieldsValue(configQuery.data.config);
       setDirty(false);
     }
   }, [configQuery.data, form]);
@@ -113,7 +119,7 @@ export function AdminAiConfigPage(): ReactElement {
 
   const discard = (): void => {
     if (configQuery.data === undefined) return;
-    form.setFieldsValue(configQuery.data);
+    form.setFieldsValue(configQuery.data.config);
     setDirty(false);
     setSaved(false);
     setValidationErrors([]);
@@ -143,6 +149,7 @@ export function AdminAiConfigPage(): ReactElement {
   return (
     <div className="page-stack config-page">
       {header}
+      {unsavedGuard}
       {saved ? (
         <Alert
           type="success"

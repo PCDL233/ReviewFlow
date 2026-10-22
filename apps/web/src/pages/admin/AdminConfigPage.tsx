@@ -24,6 +24,8 @@ import { fetchAdminConfigPayload, updateAdminConfig } from '../../api';
 import { CardHeading, PageHeader } from '../../components/PageHeader';
 import { ErrorAlert } from '../../components/ErrorAlert';
 import { useNotify } from '../../hooks/use-notify';
+import { useUnsavedChanges } from '../../hooks/use-unsaved-changes';
+import { ADMIN_CONFIG_QUERY_KEY } from '../../lib/query-keys';
 
 const TOOL_OPTIONS = [
   { label: 'AST 解析', value: 'ast_parse' },
@@ -39,8 +41,6 @@ const DIMENSION_OPTIONS = [
   { label: '性能（LLM Agent）', value: 'performance' },
   { label: '可维护性（由静态分析覆盖）', value: 'maintainability' },
 ];
-
-const CONFIG_QUERY_KEY = ['admin-config'] as const;
 
 const PAGE_HEADER = (
   <PageHeader
@@ -59,14 +59,18 @@ export function AdminConfigPage(): ReactElement {
   const queryClient = useQueryClient();
   const { notifyError } = useNotify();
 
-  const configQuery = useQuery({ queryKey: CONFIG_QUERY_KEY, queryFn: fetchAdminConfigPayload });
+  const configQuery = useQuery({
+    queryKey: ADMIN_CONFIG_QUERY_KEY,
+    queryFn: fetchAdminConfigPayload,
+  });
+  const unsavedGuard = useUnsavedChanges(dirty);
   const saveMutation = useMutation({
     mutationFn: (config: AdminConfig) => updateAdminConfig(config),
     onSuccess: (config) => {
       form.setFieldsValue(config);
       setSaved(true);
       setDirty(false);
-      void queryClient.invalidateQueries({ queryKey: CONFIG_QUERY_KEY });
+      void queryClient.invalidateQueries({ queryKey: ADMIN_CONFIG_QUERY_KEY });
     },
     onError: (e) => notifyError(e, { title: '保存配置失败' }),
   });
@@ -132,6 +136,7 @@ export function AdminConfigPage(): ReactElement {
   return (
     <div className="page-stack config-page">
       {PAGE_HEADER}
+      {unsavedGuard}
       {saved && (
         <Alert
           type="success"
